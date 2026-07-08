@@ -41,17 +41,30 @@ scripts/set-macos-default-archive-app.sh
 
 The GUI app is built at `macos/SevenZipMac/build/7-Zip Mac.app` and installed to
 `~/Applications/7-Zip Mac.app`. It provides a Chinese interface with drag and
-drop, compression, extraction, optional password input, and Finder Services
-entries for local use. The default-app script registers common archive formats
-so double-clicking archives auto-extracts them to the archive's containing
-folder via `7-Zip Mac` without showing the main app window or opening a Finder
-result window.
+drop, compression, extraction, archive-content preview, optional password input,
+and Finder Services entries for local use.
+
+The default-app script registers common archive formats to `7-Zip Mac.app`.
+When the app is launched by double-clicking an archive, it auto-extracts the
+archive to its containing folder without showing the main app window or opening
+a Finder result window. The main app remains the manual viewer and operation
+surface when launched normally or through the archive-preview Finder Service.
 
 Finder Services provide local right-click actions:
-`7-Zip：解压到当前文件夹`, `7-Zip：解压到同名文件夹`,
-`7-Zip：压缩为 7z`, and `7-Zip：压缩为 zip`. macOS usually shows these under
-Finder's Services or Quick Actions submenu unless a Finder Sync extension is
-added later.
+`7-Zip：查看压缩包内容`, `7-Zip：解压到当前文件夹`,
+`7-Zip：解压到同名文件夹`, `7-Zip：压缩为 7z`,
+`7-Zip：极限压缩为 7z`, and `7-Zip：压缩为 zip`. macOS usually shows these
+under Finder's Services or Quick Actions submenu unless a Finder Sync extension
+is added later.
+
+The current macOS interaction contract is:
+
+1. Double-click an archive: silent in-place extraction through `7-Zip Mac.app`.
+2. Right-click an archive and choose `7-Zip：查看压缩包内容`: open the main app and
+   show `7zz l` output for the selected archive.
+3. Right-click files or folders and choose `7-Zip：极限压缩为 7z`: create a 7z
+   archive with LZMA2, maximum compression level, 256 MB dictionary, maximum fast
+   bytes, solid mode, and multithreading enabled.
 
 `macos/SevenZipMac/Resources/AppIcon.icns` is bundled as the app icon. The
 installer removes the temporary build app after copying it to `~/Applications`
