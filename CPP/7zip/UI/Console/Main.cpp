@@ -122,11 +122,18 @@ DECLARE_AND_SET_CLIENT_VERSION_VAR
   #define PROG_POSTFIX_2  ""
 #endif
 
+#ifdef Z7_LOCAL_BUILD_LABEL
+  #define Z7_LOCAL_BUILD_LABEL_LINE "Local build: " Z7_LOCAL_BUILD_LABEL "\n"
+#else
+  #define Z7_LOCAL_BUILD_LABEL_LINE ""
+#endif
+
 
 static const char * const kCopyrightString = "\n7-Zip"
   PROG_POSTFIX_2
   " " MY_VERSION_CPU
-  " : " MY_COPYRIGHT_DATE "\n";
+  " : " MY_COPYRIGHT_DATE "\n"
+  Z7_LOCAL_BUILD_LABEL_LINE;
 
 static const char * const kHelpString =
     "Usage: 7z"

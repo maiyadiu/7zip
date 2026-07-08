@@ -1,0 +1,50 @@
+# Local 7-Zip Development Notes
+
+## Status
+
+- Source: official `ip7z/7zip` GitHub repository.
+- Version: `26.02`, released 2026-06-25.
+- Local branch: `codex-macos-custom`.
+- Host target: macOS arm64.
+- Primary local binary: `CPP/7zip/Bundles/Alone2/b/m_arm64/7zz`.
+- Current customization: the `Alone2` build defines
+  `Z7_LOCAL_BUILD_LABEL="codex-macos-custom"`, so the console banner clearly
+  identifies this local build.
+
+## Build
+
+```sh
+scripts/build-macos-arm64.sh
+```
+
+The script builds `CPP/7zip/Bundles/Alone2`, which produces the standalone
+`7zz` command-line binary with broad archive format support.
+
+## Verify
+
+```sh
+scripts/smoke-test.sh
+```
+
+The smoke test creates a small archive, tests it, extracts it, and compares the
+extracted files with the original files, including a Unicode filename.
+
+## Product Judgment
+
+7-Zip is a strong default choice when the priority is open source availability,
+high compression ratio, broad archive compatibility, AES-256 support, and a
+maintainable command-line core. It is not universally the best tool for every
+case: zstd/lz4 can be better for speed-first workflows, platform archive tools
+can be better for native UX, and dedicated GUI apps can be better for casual
+macOS users.
+
+## Safe Customization Areas
+
+- Build and packaging scripts for macOS.
+- Command-line defaults and user-facing messages.
+- Wrapper commands for common archive workflows.
+- Format policy toggles, such as excluding RAR code with documented license
+  implications.
+
+Avoid changing codec internals until a benchmark and compatibility target is
+defined.
