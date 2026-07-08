@@ -85,7 +85,7 @@ private class RoundedPanelView: NSView {
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
     wantsLayer = true
-    layer?.cornerRadius = 10
+    layer?.cornerRadius = 8
     layer?.cornerCurve = .continuous
     layer?.backgroundColor = fillColor.cgColor
     layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
@@ -99,8 +99,8 @@ private class RoundedPanelView: NSView {
 
 private final class DropZoneView: RoundedPanelView {
   var onDrop: (([URL]) -> Void)?
-  private let titleLabel = NSTextField(labelWithString: "把文件、文件夹或压缩包拖到这里")
-  private let subtitleLabel = NSTextField(labelWithString: "支持压缩文件夹和文件，也可以解压常见压缩包。")
+  private let titleLabel = NSTextField(labelWithString: "拖入文件、文件夹或压缩包")
+  private let subtitleLabel = NSTextField(labelWithString: "自动识别压缩或解压任务")
   private let iconView = NSImageView()
 
   override init(frame frameRect: NSRect) {
@@ -158,7 +158,7 @@ private final class DropZoneView: RoundedPanelView {
 
     addSubview(stack)
     NSLayoutConstraint.activate([
-      heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
+      heightAnchor.constraint(equalToConstant: 220),
       stack.centerXAnchor.constraint(equalTo: centerXAnchor),
       stack.centerYAnchor.constraint(equalTo: centerYAnchor),
       iconView.widthAnchor.constraint(equalToConstant: 48),
@@ -468,14 +468,14 @@ private final class MainViewController: NSViewController {
   }
 
   private func buildUI() {
-    let headerIcon = NSImageView(image: NSImage(systemSymbolName: "archivebox.fill", accessibilityDescription: "7-Zip Mac") ?? NSImage())
-    headerIcon.symbolConfiguration = .init(pointSize: 30, weight: .semibold)
-    headerIcon.contentTintColor = .controlAccentColor
+    let headerIcon = NSImageView()
+    headerIcon.image = NSImage(named: "AppIcon") ?? NSImage(systemSymbolName: "archivebox.fill", accessibilityDescription: "7-Zip Mac")
+    headerIcon.imageScaling = .scaleProportionallyUpOrDown
 
     let title = NSTextField(labelWithString: "7-Zip Mac")
-    title.font = .systemFont(ofSize: 26, weight: .bold)
+    title.font = .systemFont(ofSize: 22, weight: .bold)
 
-    let subtitle = NSTextField(labelWithString: "一个面向 macOS 的本地可视化 7zz 外壳。")
+    let subtitle = NSTextField(labelWithString: "本地压缩与解压")
     subtitle.font = .systemFont(ofSize: 13)
     subtitle.textColor = .secondaryLabelColor
 
@@ -489,8 +489,10 @@ private final class MainViewController: NSViewController {
     header.alignment = .centerY
     header.spacing = 12
 
-    modeControl.controlSize = .large
+    modeControl.controlSize = .regular
     modeControl.segmentStyle = .rounded
+    modeControl.setWidth(78, forSegment: 0)
+    modeControl.setWidth(78, forSegment: 1)
 
     let addButton = button(title: "添加", symbol: "plus", action: #selector(addFiles))
     let destinationButton = button(title: "输出位置", symbol: "folder", action: #selector(chooseDestination))
@@ -500,6 +502,14 @@ private final class MainViewController: NSViewController {
     actionBar.orientation = .horizontal
     actionBar.alignment = .centerY
     actionBar.spacing = 8
+
+    let topSpacer = NSView()
+    topSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+    let topBar = NSStackView(views: [header, topSpacer, actionBar])
+    topBar.orientation = .horizontal
+    topBar.alignment = .centerY
+    topBar.spacing = 18
 
     fileList.isEditable = false
     fileList.isSelectable = true
@@ -511,7 +521,7 @@ private final class MainViewController: NSViewController {
     fileScroll.documentView = fileList
     fileScroll.hasVerticalScroller = true
     fileScroll.borderType = .noBorder
-    fileScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
+    fileScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 230).isActive = true
 
     let filePanel = panel(title: "已选择", content: fileScroll)
 
@@ -527,6 +537,8 @@ private final class MainViewController: NSViewController {
     controlGrid.column(at: 1).xPlacement = .fill
     controlGrid.rowSpacing = 10
     controlGrid.columnSpacing = 12
+    formatPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 210).isActive = true
+    passwordField.widthAnchor.constraint(greaterThanOrEqualToConstant: 210).isActive = true
 
     let optionsPanel = panel(title: "选项", content: controlGrid)
 
@@ -540,36 +552,60 @@ private final class MainViewController: NSViewController {
     logScroll.documentView = logView
     logScroll.hasVerticalScroller = true
     logScroll.borderType = .noBorder
-    logScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
+    logScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 230).isActive = true
 
     let logPanel = panel(title: "任务日志", content: logScroll)
 
     runButton.bezelStyle = .rounded
     runButton.controlSize = .large
     runButton.keyEquivalent = "\r"
+    runButton.widthAnchor.constraint(equalToConstant: 128).isActive = true
 
     let runBar = NSStackView(views: [NSView(), runButton])
     runBar.orientation = .horizontal
     runBar.alignment = .centerY
     runBar.spacing = 8
 
-    let root = NSStackView(views: [header, actionBar, dropZone, filePanel, optionsPanel, logPanel, runBar])
+    let leftColumn = NSStackView(views: [dropZone, filePanel])
+    leftColumn.orientation = .vertical
+    leftColumn.alignment = .leading
+    leftColumn.spacing = 14
+
+    let rightColumn = NSStackView(views: [optionsPanel, logPanel, runBar])
+    rightColumn.orientation = .vertical
+    rightColumn.alignment = .leading
+    rightColumn.spacing = 14
+
+    let mainSplit = NSStackView(views: [leftColumn, rightColumn])
+    mainSplit.orientation = .horizontal
+    mainSplit.alignment = .top
+    mainSplit.spacing = 16
+    mainSplit.distribution = .fill
+
+    let root = NSStackView(views: [topBar, mainSplit])
     root.orientation = .vertical
     root.alignment = .leading
-    root.spacing = 14
+    root.spacing = 18
     root.translatesAutoresizingMaskIntoConstraints = false
 
     view.addSubview(root)
     NSLayoutConstraint.activate([
       root.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
       root.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
-      root.topAnchor.constraint(equalTo: view.topAnchor, constant: 22),
+      root.topAnchor.constraint(equalTo: view.topAnchor, constant: 34),
       root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -22),
-      dropZone.widthAnchor.constraint(equalTo: root.widthAnchor),
-      filePanel.widthAnchor.constraint(equalTo: root.widthAnchor),
-      optionsPanel.widthAnchor.constraint(equalTo: root.widthAnchor),
-      logPanel.widthAnchor.constraint(equalTo: root.widthAnchor),
-      runBar.widthAnchor.constraint(equalTo: root.widthAnchor)
+      headerIcon.widthAnchor.constraint(equalToConstant: 44),
+      headerIcon.heightAnchor.constraint(equalToConstant: 44),
+      topBar.widthAnchor.constraint(equalTo: root.widthAnchor),
+      mainSplit.widthAnchor.constraint(equalTo: root.widthAnchor),
+      mainSplit.heightAnchor.constraint(equalTo: root.heightAnchor, constant: -66),
+      leftColumn.widthAnchor.constraint(equalTo: mainSplit.widthAnchor, multiplier: 0.58),
+      rightColumn.widthAnchor.constraint(greaterThanOrEqualToConstant: 360),
+      dropZone.widthAnchor.constraint(equalTo: leftColumn.widthAnchor),
+      filePanel.widthAnchor.constraint(equalTo: leftColumn.widthAnchor),
+      optionsPanel.widthAnchor.constraint(equalTo: rightColumn.widthAnchor),
+      logPanel.widthAnchor.constraint(equalTo: rightColumn.widthAnchor),
+      runBar.widthAnchor.constraint(equalTo: rightColumn.widthAnchor)
     ])
   }
 
@@ -608,7 +644,7 @@ private final class MainViewController: NSViewController {
 
 private final class AppDelegate: NSObject, NSApplicationDelegate {
   private let window = NSWindow(
-    contentRect: NSRect(x: 0, y: 0, width: 860, height: 760),
+    contentRect: NSRect(x: 0, y: 0, width: 1120, height: 630),
     styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
     backing: .buffered,
     defer: false
@@ -624,6 +660,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     window.title = "7-Zip Mac"
     window.titlebarAppearsTransparent = true
     window.isMovableByWindowBackground = true
+    window.contentMinSize = NSSize(width: 960, height: 540)
+    window.contentAspectRatio = NSSize(width: 16, height: 9)
     window.contentViewController = controller
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
