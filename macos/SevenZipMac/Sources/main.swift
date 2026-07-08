@@ -10,6 +10,11 @@ private enum ArchiveMode {
   case compress
 }
 
+private enum ExtractionDestinationMode {
+  case containingDirectory
+  case sameNameFolder
+}
+
 private final class ArchiveTaskRunner {
   enum RunnerError: Error, LocalizedError {
     case missingEngine
@@ -220,12 +225,45 @@ private final class MainViewController: NSViewController {
     updateSelectionSummary()
   }
 
-  func prepareService(urls: [URL], mode: ArchiveMode) {
-    selectedURLs = urls
-    setMode(mode)
+  func openArchivesAndExtract(urls: [URL]) {
+    let archives = urls.filter { Self.isArchive($0) }
+    guard !archives.isEmpty else {
+      accept(urls: urls)
+      return
+    }
+
+    prepareExtraction(
+      urls: archives,
+      destinationMode: .containingDirectory,
+      quitWhenFinished: true,
+      note: "双击打开：自动解压到压缩包所在文件夹。\n"
+    )
+  }
+
+  func prepareExtraction(
+    urls: [URL],
+    destinationMode: ExtractionDestinationMode,
+    quitWhenFinished: Bool,
+    note: String? = nil
+  ) {
+    selectedURLs = urls.filter { Self.isArchive($0) }
+    setMode(.extract)
     destinationURL = nil
     updateSelectionSummary()
-    startSelectedOperation()
+    if let note {
+      appendLog(note)
+    }
+    startExtract(destinationMode: destinationMode, quitWhenFinished: quitWhenFinished)
+  }
+
+  func prepareCompression(urls: [URL], format: String, quitWhenFinished: Bool) {
+    selectedURLs = urls
+    setMode(.compress)
+    destinationURL = nil
+    formatPopup.selectItem(withTitle: format)
+    updateSelectionSummary()
+    appendLog("Finder 服务：压缩为 \(format)。\n")
+    startCompress(quitWhenFinished: quitWhenFinished)
   }
 
   @objc private func modeChanged() {
@@ -276,13 +314,13 @@ private final class MainViewController: NSViewController {
 
     switch mode {
     case .extract:
-      startExtract()
+      startExtract(destinationMode: .sameNameFolder, quitWhenFinished: false)
     case .compress:
-      startCompress()
+      startCompress(quitWhenFinished: false)
     }
   }
 
-  private func startExtract() {
+  private func startExtract(destinationMode: ExtractionDestinationMode, quitWhenFinished: Bool) {
     let archives = selectedURLs.filter { Self.isArchive($0) }
     guard !archives.isEmpty else {
       showAlert(message: "没有可解压的压缩包", information: "解压操作需要一个或多个支持的压缩包文件。")
@@ -294,14 +332,15 @@ private final class MainViewController: NSViewController {
     appendLog("\n开始解压 \(archives.count) 个压缩包...\n")
 
     var queue = archives
+    var outputURLs: [URL] = []
     func runNext() {
       guard !queue.isEmpty else {
-        finishRun()
+        finishRun(revealURLs: outputURLs, quitWhenFinished: quitWhenFinished)
         return
       }
 
       let archive = queue.removeFirst()
-      let output = extractionDestination(for: archive, multipleArchives: archives.count > 1)
+      let output = extractionDestination(for: archive, multipleArchives: archives.count > 1, mode: destinationMode)
       do {
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
       } catch {
@@ -314,6 +353,9 @@ private final class MainViewController: NSViewController {
       appendLog("正在解压 \(archive.lastPathComponent) -> \(output.path)\n")
       run7zz(arguments: args, workingDirectory: archive.deletingLastPathComponent()) { [weak self] status in
         self?.appendLog(status == 0 ? "完成：\(archive.lastPathComponent)\n" : "失败：\(archive.lastPathComponent)，退出码=\(status)\n")
+        if status == 0 {
+          outputURLs.append(output)
+        }
         runNext()
       }
     }
@@ -321,7 +363,7 @@ private final class MainViewController: NSViewController {
     runNext()
   }
 
-  private func startCompress() {
+  private func startCompress(quitWhenFinished: Bool) {
     let format = formatPopup.titleOfSelectedItem ?? "7z"
     guard let output = archiveOutputURL(format: format) else {
       showAlert(message: "无法确定压缩包名称", information: "请选择位于可写目录中的文件或文件夹。")
@@ -347,7 +389,7 @@ private final class MainViewController: NSViewController {
     appendLog("\n正在创建 \(output.path)\n")
     run7zz(arguments: args, workingDirectory: workingDirectory) { [weak self] status in
       self?.appendLog(status == 0 ? "压缩包已创建。\n" : "压缩失败，退出码=\(status)\n")
-      self?.finishRun()
+      self?.finishRun(revealURLs: status == 0 ? [output] : [], quitWhenFinished: quitWhenFinished)
     }
   }
 
@@ -363,11 +405,16 @@ private final class MainViewController: NSViewController {
     }
   }
 
-  private func finishRun() {
+  private func finishRun(revealURLs: [URL], quitWhenFinished: Bool) {
     isRunning = false
     runButton.isEnabled = true
     appendLog("全部任务已完成。\n")
-    NSWorkspace.shared.activateFileViewerSelecting(selectedURLs)
+    if !revealURLs.isEmpty {
+      NSWorkspace.shared.activateFileViewerSelecting(revealURLs)
+    }
+    if quitWhenFinished {
+      NSApp.terminate(nil)
+    }
   }
 
   private func extractionArguments(archive: URL, output: URL) -> [String] {
@@ -379,7 +426,7 @@ private final class MainViewController: NSViewController {
     return args
   }
 
-  private func extractionDestination(for archive: URL, multipleArchives: Bool) -> URL {
+  private func extractionDestination(for archive: URL, multipleArchives: Bool, mode: ExtractionDestinationMode) -> URL {
     if let destinationURL {
       if multipleArchives {
         return destinationURL.appendingPathComponent(archive.deletingPathExtension().lastPathComponent, isDirectory: true)
@@ -387,9 +434,13 @@ private final class MainViewController: NSViewController {
       return destinationURL
     }
 
-    return archive
-      .deletingLastPathComponent()
-      .appendingPathComponent(archive.deletingPathExtension().lastPathComponent, isDirectory: true)
+    let parent = archive.deletingLastPathComponent()
+    switch mode {
+    case .containingDirectory:
+      return parent
+    case .sameNameFolder:
+      return parent.appendingPathComponent(archive.deletingPathExtension().lastPathComponent, isDirectory: true)
+    }
   }
 
   private func archiveOutputURL(format: String) -> URL? {
@@ -668,29 +719,57 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func application(_ application: NSApplication, open urls: [URL]) {
-    controller.accept(urls: urls)
+    controller.openArchivesAndExtract(urls: urls)
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     true
   }
 
-  @objc func compressSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+  @objc func compress7zSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
     let urls = DropZoneView.fileURLs(from: pasteboard)
     guard !urls.isEmpty else {
       error.pointee = "Finder 没有传入文件。"
       return
     }
-    controller.prepareService(urls: urls, mode: .compress)
+    controller.prepareCompression(urls: urls, format: "7z", quitWhenFinished: true)
   }
 
-  @objc func extractSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+  @objc func compressZipSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+    let urls = DropZoneView.fileURLs(from: pasteboard)
+    guard !urls.isEmpty else {
+      error.pointee = "Finder 没有传入文件。"
+      return
+    }
+    controller.prepareCompression(urls: urls, format: "zip", quitWhenFinished: true)
+  }
+
+  @objc func extractHereSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
     let urls = DropZoneView.fileURLs(from: pasteboard).filter { archiveExtensions.contains($0.pathExtension.lowercased()) }
     guard !urls.isEmpty else {
       error.pointee = "Finder 没有传入支持的压缩包。"
       return
     }
-    controller.prepareService(urls: urls, mode: .extract)
+    controller.prepareExtraction(
+      urls: urls,
+      destinationMode: .containingDirectory,
+      quitWhenFinished: true,
+      note: "Finder 服务：解压到当前文件夹。\n"
+    )
+  }
+
+  @objc func extractToFolderSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+    let urls = DropZoneView.fileURLs(from: pasteboard).filter { archiveExtensions.contains($0.pathExtension.lowercased()) }
+    guard !urls.isEmpty else {
+      error.pointee = "Finder 没有传入支持的压缩包。"
+      return
+    }
+    controller.prepareExtraction(
+      urls: urls,
+      destinationMode: .sameNameFolder,
+      quitWhenFinished: true,
+      note: "Finder 服务：解压到同名文件夹。\n"
+    )
   }
 }
 

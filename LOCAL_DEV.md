@@ -43,7 +43,14 @@ The GUI app is built at `macos/SevenZipMac/build/7-Zip Mac.app` and installed to
 `~/Applications/7-Zip Mac.app`. It provides a Chinese interface with drag and
 drop, compression, extraction, optional password input, and Finder Services
 entries for local use. The default-app script registers common archive formats
-so double-clicking archives opens `7-Zip Mac`.
+so double-clicking archives auto-extracts them to the archive's containing
+folder via `7-Zip Mac`.
+
+Finder Services provide local right-click actions:
+`7-Zip：解压到当前文件夹`, `7-Zip：解压到同名文件夹`,
+`7-Zip：压缩为 7z`, and `7-Zip：压缩为 zip`. macOS usually shows these under
+Finder's Services or Quick Actions submenu unless a Finder Sync extension is
+added later.
 
 `macos/SevenZipMac/Resources/AppIcon.icns` is bundled as the app icon. The
 installer removes the temporary build app after copying it to `~/Applications`
