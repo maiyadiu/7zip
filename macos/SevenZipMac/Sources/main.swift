@@ -236,6 +236,7 @@ private final class MainViewController: NSViewController {
       urls: archives,
       destinationMode: .containingDirectory,
       quitWhenFinished: true,
+      revealWhenFinished: false,
       note: "双击打开：自动解压到压缩包所在文件夹。\n"
     )
   }
@@ -244,6 +245,7 @@ private final class MainViewController: NSViewController {
     urls: [URL],
     destinationMode: ExtractionDestinationMode,
     quitWhenFinished: Bool,
+    revealWhenFinished: Bool,
     note: String? = nil
   ) {
     selectedURLs = urls.filter { Self.isArchive($0) }
@@ -253,17 +255,21 @@ private final class MainViewController: NSViewController {
     if let note {
       appendLog(note)
     }
-    startExtract(destinationMode: destinationMode, quitWhenFinished: quitWhenFinished)
+    startExtract(
+      destinationMode: destinationMode,
+      quitWhenFinished: quitWhenFinished,
+      revealWhenFinished: revealWhenFinished
+    )
   }
 
-  func prepareCompression(urls: [URL], format: String, quitWhenFinished: Bool) {
+  func prepareCompression(urls: [URL], format: String, quitWhenFinished: Bool, revealWhenFinished: Bool) {
     selectedURLs = urls
     setMode(.compress)
     destinationURL = nil
     formatPopup.selectItem(withTitle: format)
     updateSelectionSummary()
     appendLog("Finder 服务：压缩为 \(format)。\n")
-    startCompress(quitWhenFinished: quitWhenFinished)
+    startCompress(quitWhenFinished: quitWhenFinished, revealWhenFinished: revealWhenFinished)
   }
 
   @objc private func modeChanged() {
@@ -314,13 +320,13 @@ private final class MainViewController: NSViewController {
 
     switch mode {
     case .extract:
-      startExtract(destinationMode: .sameNameFolder, quitWhenFinished: false)
+      startExtract(destinationMode: .sameNameFolder, quitWhenFinished: false, revealWhenFinished: false)
     case .compress:
-      startCompress(quitWhenFinished: false)
+      startCompress(quitWhenFinished: false, revealWhenFinished: false)
     }
   }
 
-  private func startExtract(destinationMode: ExtractionDestinationMode, quitWhenFinished: Bool) {
+  private func startExtract(destinationMode: ExtractionDestinationMode, quitWhenFinished: Bool, revealWhenFinished: Bool) {
     let archives = selectedURLs.filter { Self.isArchive($0) }
     guard !archives.isEmpty else {
       showAlert(message: "没有可解压的压缩包", information: "解压操作需要一个或多个支持的压缩包文件。")
@@ -335,7 +341,7 @@ private final class MainViewController: NSViewController {
     var outputURLs: [URL] = []
     func runNext() {
       guard !queue.isEmpty else {
-        finishRun(revealURLs: outputURLs, quitWhenFinished: quitWhenFinished)
+        finishRun(revealURLs: outputURLs, quitWhenFinished: quitWhenFinished, revealWhenFinished: revealWhenFinished)
         return
       }
 
@@ -363,7 +369,7 @@ private final class MainViewController: NSViewController {
     runNext()
   }
 
-  private func startCompress(quitWhenFinished: Bool) {
+  private func startCompress(quitWhenFinished: Bool, revealWhenFinished: Bool) {
     let format = formatPopup.titleOfSelectedItem ?? "7z"
     guard let output = archiveOutputURL(format: format) else {
       showAlert(message: "无法确定压缩包名称", information: "请选择位于可写目录中的文件或文件夹。")
@@ -389,7 +395,11 @@ private final class MainViewController: NSViewController {
     appendLog("\n正在创建 \(output.path)\n")
     run7zz(arguments: args, workingDirectory: workingDirectory) { [weak self] status in
       self?.appendLog(status == 0 ? "压缩包已创建。\n" : "压缩失败，退出码=\(status)\n")
-      self?.finishRun(revealURLs: status == 0 ? [output] : [], quitWhenFinished: quitWhenFinished)
+      self?.finishRun(
+        revealURLs: status == 0 ? [output] : [],
+        quitWhenFinished: quitWhenFinished,
+        revealWhenFinished: revealWhenFinished
+      )
     }
   }
 
@@ -405,11 +415,11 @@ private final class MainViewController: NSViewController {
     }
   }
 
-  private func finishRun(revealURLs: [URL], quitWhenFinished: Bool) {
+  private func finishRun(revealURLs: [URL], quitWhenFinished: Bool, revealWhenFinished: Bool) {
     isRunning = false
     runButton.isEnabled = true
     appendLog("全部任务已完成。\n")
-    if !revealURLs.isEmpty {
+    if revealWhenFinished, !revealURLs.isEmpty {
       NSWorkspace.shared.activateFileViewerSelecting(revealURLs)
     }
     if quitWhenFinished {
@@ -702,11 +712,49 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
   )
 
   private let controller = MainViewController()
+  private var didReceiveBackgroundAction = false
+  private var didConfigureWindow = false
+  private var showWindowWorkItem: DispatchWorkItem?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.servicesProvider = self
     NSUpdateDynamicServices()
+    scheduleInitialWindowDisplay()
+  }
 
+  func application(_ application: NSApplication, open urls: [URL]) {
+    beginBackgroundAction()
+    controller.openArchivesAndExtract(urls: urls)
+  }
+
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    if !flag {
+      showMainWindow()
+    }
+    return true
+  }
+
+  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    true
+  }
+
+  private func scheduleInitialWindowDisplay() {
+    let workItem = DispatchWorkItem { [weak self] in
+      guard let self, !self.didReceiveBackgroundAction else { return }
+      self.showMainWindow()
+    }
+    showWindowWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
+  }
+
+  private func beginBackgroundAction() {
+    didReceiveBackgroundAction = true
+    showWindowWorkItem?.cancel()
+    _ = controller.view
+  }
+
+  private func configureWindowIfNeeded() {
+    guard !didConfigureWindow else { return }
     window.center()
     window.title = "7-Zip Mac"
     window.titlebarAppearsTransparent = true
@@ -714,37 +762,38 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     window.contentMinSize = NSSize(width: 960, height: 540)
     window.contentAspectRatio = NSSize(width: 16, height: 9)
     window.contentViewController = controller
+    didConfigureWindow = true
+  }
+
+  private func showMainWindow() {
+    configureWindowIfNeeded()
+    NSApp.setActivationPolicy(.regular)
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
   }
 
-  func application(_ application: NSApplication, open urls: [URL]) {
-    controller.openArchivesAndExtract(urls: urls)
-  }
-
-  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-    true
-  }
-
   @objc func compress7zSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+    beginBackgroundAction()
     let urls = DropZoneView.fileURLs(from: pasteboard)
     guard !urls.isEmpty else {
       error.pointee = "Finder 没有传入文件。"
       return
     }
-    controller.prepareCompression(urls: urls, format: "7z", quitWhenFinished: true)
+    controller.prepareCompression(urls: urls, format: "7z", quitWhenFinished: true, revealWhenFinished: false)
   }
 
   @objc func compressZipSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+    beginBackgroundAction()
     let urls = DropZoneView.fileURLs(from: pasteboard)
     guard !urls.isEmpty else {
       error.pointee = "Finder 没有传入文件。"
       return
     }
-    controller.prepareCompression(urls: urls, format: "zip", quitWhenFinished: true)
+    controller.prepareCompression(urls: urls, format: "zip", quitWhenFinished: true, revealWhenFinished: false)
   }
 
   @objc func extractHereSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+    beginBackgroundAction()
     let urls = DropZoneView.fileURLs(from: pasteboard).filter { archiveExtensions.contains($0.pathExtension.lowercased()) }
     guard !urls.isEmpty else {
       error.pointee = "Finder 没有传入支持的压缩包。"
@@ -754,11 +803,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
       urls: urls,
       destinationMode: .containingDirectory,
       quitWhenFinished: true,
+      revealWhenFinished: false,
       note: "Finder 服务：解压到当前文件夹。\n"
     )
   }
 
   @objc func extractToFolderSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+    beginBackgroundAction()
     let urls = DropZoneView.fileURLs(from: pasteboard).filter { archiveExtensions.contains($0.pathExtension.lowercased()) }
     guard !urls.isEmpty else {
       error.pointee = "Finder 没有传入支持的压缩包。"
@@ -768,6 +819,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
       urls: urls,
       destinationMode: .sameNameFolder,
       quitWhenFinished: true,
+      revealWhenFinished: false,
       note: "Finder 服务：解压到同名文件夹。\n"
     )
   }
@@ -776,5 +828,5 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 let app = NSApplication.shared
 private let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.regular)
+app.setActivationPolicy(.accessory)
 app.run()

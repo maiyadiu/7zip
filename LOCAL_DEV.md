@@ -44,7 +44,8 @@ The GUI app is built at `macos/SevenZipMac/build/7-Zip Mac.app` and installed to
 drop, compression, extraction, optional password input, and Finder Services
 entries for local use. The default-app script registers common archive formats
 so double-clicking archives auto-extracts them to the archive's containing
-folder via `7-Zip Mac`.
+folder via `7-Zip Mac` without showing the main app window or opening a Finder
+result window.
 
 Finder Services provide local right-click actions:
 `7-Zip：解压到当前文件夹`, `7-Zip：解压到同名文件夹`,
