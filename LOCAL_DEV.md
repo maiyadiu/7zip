@@ -10,6 +10,8 @@
 - Current customization: the `Alone2` build defines
   `Z7_LOCAL_BUILD_LABEL="codex-macos-custom"`, so the console banner clearly
   identifies this local build.
+- macOS GUI: `macos/SevenZipMac` builds a local-use Chinese AppKit shell around
+  the bundled `7zz` engine.
 
 ## Build
 
@@ -28,6 +30,18 @@ scripts/smoke-test.sh
 
 The smoke test creates a small archive, tests it, extracts it, and compares the
 extracted files with the original files, including a Unicode filename.
+
+## macOS GUI
+
+```sh
+scripts/build-macos-gui.sh
+scripts/install-macos-gui.sh
+```
+
+The GUI app is built at `macos/SevenZipMac/build/7-Zip Mac.app` and installed to
+`~/Applications/7-Zip Mac.app`. It provides a Chinese interface with drag and
+drop, compression, extraction, optional password input, and Finder Services
+entries for local use.
 
 ## Product Judgment
 
