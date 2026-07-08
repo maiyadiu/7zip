@@ -55,6 +55,8 @@
   </array>
   <key>CFBundleExecutable</key>
   <string>SevenZipMac</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>com.maiyadiu.SevenZipMac</string>
   <key>CFBundleInfoDictionaryVersion</key>

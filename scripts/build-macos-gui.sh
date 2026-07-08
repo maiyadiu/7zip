@@ -26,6 +26,7 @@ swiftc \
 
 cp "$app_root/Resources/Info.plist" "$contents/Info.plist"
 cp "$engine" "$resources_dir/7zz"
+cp "$app_root/Resources/AppIcon.icns" "$resources_dir/AppIcon.icns"
 chmod +x "$macos_dir/SevenZipMac" "$resources_dir/7zz"
 
 if command -v codesign >/dev/null 2>&1; then

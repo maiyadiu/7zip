@@ -21,5 +21,7 @@ if [ -x "$lsregister" ]; then
   "$lsregister" -f "$installed_app"
 fi
 
+rm -rf "$bundle"
+
 printf '已安装 %s\n' "$installed_app"
 printf '请先打开一次应用；如果 macOS 询问是否启用 Finder 服务，请允许。\n'

@@ -45,6 +45,10 @@ drop, compression, extraction, optional password input, and Finder Services
 entries for local use. The default-app script registers common archive formats
 so double-clicking archives opens `7-Zip Mac`.
 
+`macos/SevenZipMac/Resources/AppIcon.icns` is bundled as the app icon. The
+installer removes the temporary build app after copying it to `~/Applications`
+so Finder normally shows only one `7-Zip Mac.app`.
+
 ## Product Judgment
 
 7-Zip is a strong default choice when the priority is open source availability,
