@@ -36,6 +36,17 @@
         <string>public.archive</string>
         <string>public.zip-archive</string>
         <string>public.tar-archive</string>
+        <string>org.7-zip.7-zip-archive</string>
+        <string>com.rarlab.rar-archive</string>
+        <string>org.gnu.gnu-zip-archive</string>
+        <string>org.gnu.gnu-zip-tar-archive</string>
+        <string>public.bzip2-archive</string>
+        <string>public.tar-bzip2-archive</string>
+        <string>org.tukaani.xz-archive</string>
+        <string>org.tukaani.tar-xz-archive</string>
+        <string>com.microsoft.cab</string>
+        <string>public.iso-image</string>
+        <string>com.apple.disk-image-udif</string>
         <string>com.maiyadiu.7zip.archive.7z</string>
         <string>com.maiyadiu.7zip.archive.rar</string>
         <string>com.maiyadiu.7zip.archive.zstd</string>
@@ -92,10 +103,42 @@
         <string>public.archive</string>
         <string>public.zip-archive</string>
         <string>public.tar-archive</string>
+        <string>org.7-zip.7-zip-archive</string>
+        <string>com.rarlab.rar-archive</string>
+        <string>org.gnu.gnu-zip-archive</string>
+        <string>org.gnu.gnu-zip-tar-archive</string>
+        <string>public.bzip2-archive</string>
+        <string>public.tar-bzip2-archive</string>
+        <string>org.tukaani.xz-archive</string>
+        <string>org.tukaani.tar-xz-archive</string>
+        <string>com.microsoft.cab</string>
+        <string>public.iso-image</string>
+        <string>com.apple.disk-image-udif</string>
         <string>com.maiyadiu.7zip.archive.7z</string>
         <string>com.maiyadiu.7zip.archive.rar</string>
         <string>com.maiyadiu.7zip.archive.zstd</string>
       </array>
+    </dict>
+  </array>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.archive</string>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeDescription</key>
+      <string>7-Zip 压缩包</string>
+      <key>UTTypeIdentifier</key>
+      <string>org.7-zip.7-zip-archive</string>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>7z</string>
+        </array>
+      </dict>
     </dict>
   </array>
   <key>UTImportedTypeDeclarations</key>

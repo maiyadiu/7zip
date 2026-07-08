@@ -36,12 +36,14 @@ extracted files with the original files, including a Unicode filename.
 ```sh
 scripts/build-macos-gui.sh
 scripts/install-macos-gui.sh
+scripts/set-macos-default-archive-app.sh
 ```
 
 The GUI app is built at `macos/SevenZipMac/build/7-Zip Mac.app` and installed to
 `~/Applications/7-Zip Mac.app`. It provides a Chinese interface with drag and
 drop, compression, extraction, optional password input, and Finder Services
-entries for local use.
+entries for local use. The default-app script registers common archive formats
+so double-clicking archives opens `7-Zip Mac`.
 
 ## Product Judgment
 
