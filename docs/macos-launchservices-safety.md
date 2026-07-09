@@ -58,7 +58,11 @@ choice prompts.
   inside the app and does not require alternate default handlers or
   LaunchServices changes.
 - Compression choices are exposed through Finder Services:
-  `7-Zip：压缩为 7z`, `7-Zip：极限压缩为 7z`, and `7-Zip：压缩为 zip`.
+  `7-Zip：压缩为 7z`, `7-Zip：极限压缩为 7z`, `7-Zip：压缩为 zip`, and
+  `7-Zip：服务端打包为 tar.gz`.
+- `.tar.gz` preview and extraction are implemented as an internal 7zz pipeline:
+  gzip stream to tar listing/extraction. This keeps server-style packages inside
+  the app workflow without registering a second archive handler.
 - Each Finder Service includes `NSRequiredContext` scoped to
   `com.apple.finder`; without this key macOS may register the service but not
   automatically present it in the Services menu.

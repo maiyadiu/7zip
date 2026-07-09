@@ -62,9 +62,9 @@ confirmation prompts and destabilize Finder/login state.
 Finder Services provide local right-click actions:
 `7-Zip：查看压缩包内容`, `7-Zip：解压到当前文件夹`,
 `7-Zip：解压到同名文件夹`, `7-Zip：压缩为 7z`,
-`7-Zip：极限压缩为 7z`, and `7-Zip：压缩为 zip`. macOS usually shows these
-under Finder's Services or Quick Actions submenu unless a Finder Sync extension
-is added later.
+`7-Zip：极限压缩为 7z`, `7-Zip：压缩为 zip`, and
+`7-Zip：服务端打包为 tar.gz`. macOS usually shows these under Finder's
+Services or Quick Actions submenu unless a Finder Sync extension is added later.
 
 The current macOS interaction contract is:
 
@@ -79,6 +79,17 @@ The current macOS interaction contract is:
 3. Right-click files or folders and choose `7-Zip：极限压缩为 7z`: create a 7z
    archive with LZMA2, maximum compression level, 256 MB dictionary, maximum fast
    bytes, solid mode, and multithreading enabled.
+4. Right-click a game server directory such as `jxser` and choose
+   `7-Zip：服务端打包为 tar.gz`: create a Linux-friendly `tar.gz` package by
+   first writing a tar archive with relative paths, then gzip-compressing that
+   tar file. The service filters macOS metadata files such as `.DS_Store`,
+   `._*`, and `__MACOSX`, while preserving real UTF-8 filenames for transfer
+   back to the remote game server.
+
+For `.tar.gz` / `.tgz` archives, preview and extraction are recursive: the app
+streams the outer gzip layer into the inner tar reader, so the UI shows the real
+`jxser/...` tree and extraction produces the directory contents directly rather
+than leaving a standalone `.tar` file.
 
 `macos/SevenZipMac/Resources/AppIcon.icns` is bundled as the app icon. The
 installer removes the temporary build app after copying it to `~/Applications`

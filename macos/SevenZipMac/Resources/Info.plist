@@ -243,6 +243,26 @@
         <string>public.item</string>
       </array>
     </dict>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict>
+        <key>default</key>
+        <string>7-Zip：服务端打包为 tar.gz</string>
+      </dict>
+      <key>NSRequiredContext</key>
+      <dict>
+        <key>NSApplicationIdentifier</key>
+        <string>com.apple.finder</string>
+      </dict>
+      <key>NSMessage</key>
+      <string>compressServerTarGzipSelection</string>
+      <key>NSPortName</key>
+      <string>7-Zip Mac</string>
+      <key>NSSendFileTypes</key>
+      <array>
+        <string>public.item</string>
+      </array>
+    </dict>
   </array>
   <key>UTExportedTypeDeclarations</key>
   <array>

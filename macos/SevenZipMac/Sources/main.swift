@@ -5,6 +5,11 @@ private let archiveExtensions: Set<String> = [
   "tzst", "cab", "iso", "dmg", "wim", "esd"
 ]
 
+private func isTarGzipArchive(_ url: URL) -> Bool {
+  let name = url.lastPathComponent.lowercased()
+  return name.hasSuffix(".tar.gz") || name.hasSuffix(".tgz")
+}
+
 private enum ArchiveMode {
   case extract
   case compress
@@ -15,10 +20,11 @@ private enum ExtractionDestinationMode {
   case sameNameFolder
 }
 
-private enum CompressionProfile {
+private enum CompressionProfile: Equatable {
   case sevenZipDefault
   case sevenZipUltra
   case zipDefault
+  case serverTarGzip
 
   var format: String {
     switch self {
@@ -26,6 +32,8 @@ private enum CompressionProfile {
       return "7z"
     case .zipDefault:
       return "zip"
+    case .serverTarGzip:
+      return "tar.gz"
     }
   }
 
@@ -37,6 +45,8 @@ private enum CompressionProfile {
       return "极限 7z"
     case .zipDefault:
       return "zip"
+    case .serverTarGzip:
+      return "服务端 tar.gz"
     }
   }
 
@@ -48,11 +58,33 @@ private enum CompressionProfile {
       return ["-mx=9", "-m0=LZMA2", "-md=256m", "-mfb=273", "-ms=on", "-mmt=on"]
     case .zipDefault:
       return ["-mx=9"]
+    case .serverTarGzip:
+      return []
     }
   }
 
+  var popupTitle: String {
+    switch self {
+    case .serverTarGzip:
+      return "tar.gz（服务端）"
+    default:
+      return format
+    }
+  }
+
+  var supportsPassword: Bool {
+    self != .serverTarGzip
+  }
+
+  var supportsHeaderEncryption: Bool {
+    self == .sevenZipDefault || self == .sevenZipUltra
+  }
+
   static func from(format: String) -> CompressionProfile {
-    format == "zip" ? .zipDefault : .sevenZipDefault
+    if format.contains("tar.gz") || format == "tgz" {
+      return .serverTarGzip
+    }
+    return format == "zip" ? .zipDefault : .sevenZipDefault
   }
 }
 
@@ -163,6 +195,122 @@ private final class ArchiveTaskRunner {
       pipe.fileHandleForWriting.closeFile()
       DispatchQueue.main.async {
         completion(1, "启动 7zz 失败：\(error.localizedDescription)\n")
+      }
+      return nil
+    }
+  }
+
+  @discardableResult
+  func runTarGzipListing(
+    archive: URL,
+    completion: @escaping (Int32, String) -> Void
+  ) -> [Process]? {
+    let gzipProcess = Process()
+    let tarListProcess = Process()
+    let tarStream = Pipe()
+    let outputPipe = Pipe()
+    let captureQueue = DispatchQueue(label: "com.maiyadiu.sevenzipmac.targzip-list")
+
+    gzipProcess.executableURL = engineURL
+    gzipProcess.arguments = ["x", "-so", archive.path]
+    gzipProcess.currentDirectoryURL = archive.deletingLastPathComponent()
+    gzipProcess.standardOutput = tarStream
+    gzipProcess.standardError = outputPipe
+
+    tarListProcess.executableURL = engineURL
+    tarListProcess.arguments = ["l", "-slt", "-ttar", "-si"]
+    tarListProcess.currentDirectoryURL = archive.deletingLastPathComponent()
+    tarListProcess.standardInput = tarStream
+    tarListProcess.standardOutput = outputPipe
+    tarListProcess.standardError = outputPipe
+
+    do {
+      try tarListProcess.run()
+      try gzipProcess.run()
+      tarStream.fileHandleForWriting.closeFile()
+      tarStream.fileHandleForReading.closeFile()
+      outputPipe.fileHandleForWriting.closeFile()
+
+      captureQueue.async {
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        gzipProcess.waitUntilExit()
+        tarListProcess.waitUntilExit()
+        let status = gzipProcess.terminationStatus == 0
+          ? tarListProcess.terminationStatus
+          : gzipProcess.terminationStatus
+        let text = Self.decode(data)
+        DispatchQueue.main.async {
+          completion(status, text)
+        }
+      }
+
+      return [gzipProcess, tarListProcess]
+    } catch {
+      gzipProcess.terminate()
+      tarListProcess.terminate()
+      DispatchQueue.main.async {
+        completion(1, "读取 tar.gz 失败：\(error.localizedDescription)\n")
+      }
+      return nil
+    }
+  }
+
+  @discardableResult
+  func runTarGzipExtract(
+    archive: URL,
+    outputDirectory: URL,
+    output: @escaping (String) -> Void,
+    completion: @escaping (Int32) -> Void
+  ) -> [Process]? {
+    let gzipProcess = Process()
+    let tarExtractProcess = Process()
+    let tarStream = Pipe()
+    let outputPipe = Pipe()
+    let captureQueue = DispatchQueue(label: "com.maiyadiu.sevenzipmac.targzip-extract")
+
+    gzipProcess.executableURL = engineURL
+    gzipProcess.arguments = ["x", "-so", archive.path]
+    gzipProcess.currentDirectoryURL = archive.deletingLastPathComponent()
+    gzipProcess.standardOutput = tarStream
+    gzipProcess.standardError = outputPipe
+
+    tarExtractProcess.executableURL = engineURL
+    tarExtractProcess.arguments = ["x", "-ttar", "-si", "-y", "-o\(outputDirectory.path)"]
+    tarExtractProcess.currentDirectoryURL = outputDirectory
+    tarExtractProcess.standardInput = tarStream
+    tarExtractProcess.standardOutput = outputPipe
+    tarExtractProcess.standardError = outputPipe
+
+    do {
+      try tarExtractProcess.run()
+      try gzipProcess.run()
+      tarStream.fileHandleForWriting.closeFile()
+      tarStream.fileHandleForReading.closeFile()
+      outputPipe.fileHandleForWriting.closeFile()
+
+      captureQueue.async {
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        gzipProcess.waitUntilExit()
+        tarExtractProcess.waitUntilExit()
+        let status = gzipProcess.terminationStatus == 0
+          ? tarExtractProcess.terminationStatus
+          : gzipProcess.terminationStatus
+        let text = Self.decode(data)
+        DispatchQueue.main.async {
+          if !text.isEmpty {
+            output(text)
+          }
+          completion(status)
+        }
+      }
+
+      return [gzipProcess, tarExtractProcess]
+    } catch {
+      gzipProcess.terminate()
+      tarExtractProcess.terminate()
+      DispatchQueue.main.async {
+        output("解压 tar.gz 失败：\(error.localizedDescription)\n")
+        completion(1)
       }
       return nil
     }
@@ -443,6 +591,9 @@ private enum ArchiveListingParser {
       if path == "." || path == archive.path || path == archive.lastPathComponent {
         return nil
       }
+      if isMacMetadataPath(path) {
+        return nil
+      }
       if record["Type"] != nil, record["Size"] == nil {
         return nil
       }
@@ -465,6 +616,21 @@ private enum ArchiveListingParser {
     formatter.allowedUnits = [.useBytes, .useKB, .useMB, .useGB]
     formatter.countStyle = .file
     return formatter.string(fromByteCount: bytes)
+  }
+
+  private static func isMacMetadataPath(_ path: String) -> Bool {
+    let components = path
+      .replacingOccurrences(of: "\\", with: "/")
+      .split(separator: "/")
+      .map(String.init)
+
+    return components.contains { component in
+      component == ".DS_Store"
+        || component == "__MACOSX"
+        || component == ".Spotlight-V100"
+        || component == ".Trashes"
+        || component.hasPrefix("._")
+    }
   }
 }
 
@@ -559,7 +725,7 @@ private enum ArchiveTreeBuilder {
 private final class ExtractionProgressWindowController: NSWindowController, NSWindowDelegate {
   private let archives: [URL]
   private var queue: [URL]
-  private var currentProcess: Process?
+  private var currentProcesses: [Process] = []
   private var completedCount = 0
   private var failedCount = 0
   private var didFinish = false
@@ -600,7 +766,7 @@ private final class ExtractionProgressWindowController: NSWindowController, NSWi
 
   func windowWillClose(_ notification: Notification) {
     if !didFinish {
-      currentProcess?.terminate()
+      currentProcesses.forEach { $0.terminate() }
     }
     NSApp.terminate(nil)
   }
@@ -612,7 +778,7 @@ private final class ExtractionProgressWindowController: NSWindowController, NSWi
     }
 
     didCancel = true
-    currentProcess?.terminate()
+    currentProcesses.forEach { $0.terminate() }
     queue.removeAll()
     failedCount += 1
     complete(message: "已取消。", shouldAutoClose: false)
@@ -687,22 +853,34 @@ private final class ExtractionProgressWindowController: NSWindowController, NSWi
     detailLabel.stringValue = archive.lastPathComponent
     statusLabel.stringValue = "输出位置：\(output.path)"
 
-    let args = ["x", archive.path, "-o\(output.path)", "-y", "-aou"]
     do {
       let runner = try ArchiveTaskRunner()
-      currentProcess = runner.run(arguments: args, workingDirectory: output, output: { [weak self] text in
-        self?.consumeProgressOutput(text)
-      }, completion: { [weak self] status in
+      let completion: (Int32) -> Void = { [weak self] status in
         guard let self else { return }
         guard !self.didCancel else { return }
-        self.currentProcess = nil
+        self.currentProcesses = []
         self.completedCount += 1
         if status != 0 {
           self.failedCount += 1
         }
         self.progress.doubleValue = Double(self.completedCount)
         self.runNext()
-      })
+      }
+
+      if isTarGzipArchive(archive) {
+        currentProcesses = runner.runTarGzipExtract(archive: archive, outputDirectory: output, output: { [weak self] text in
+          self?.consumeProgressOutput(text)
+        }, completion: completion) ?? []
+      } else {
+        let args = ["x", archive.path, "-o\(output.path)", "-y", "-aou"]
+        if let process = runner.run(arguments: args, workingDirectory: output, output: { [weak self] text in
+          self?.consumeProgressOutput(text)
+        }, completion: completion) {
+          currentProcesses = [process]
+        } else {
+          currentProcesses = []
+        }
+      }
     } catch {
       failedCount += 1
       completedCount += 1
@@ -721,7 +899,7 @@ private final class ExtractionProgressWindowController: NSWindowController, NSWi
 
   private func complete(message: String, shouldAutoClose: Bool) {
     didFinish = true
-    currentProcess = nil
+    currentProcesses = []
     titleLabel.stringValue = failedCount == 0 ? "解压完成" : "解压未全部完成"
     detailLabel.stringValue = message
     statusLabel.stringValue = failedCount == 0 ? "文件已解压到压缩包所在文件夹。" : "请用主界面查看日志或输入密码后重试。"
@@ -775,7 +953,9 @@ private final class MainViewController: NSViewController {
       self?.accept(urls: urls)
     }
 
-    formatPopup.addItems(withTitles: ["7z", "zip"])
+    formatPopup.addItems(withTitles: ["7z", "zip", CompressionProfile.serverTarGzip.popupTitle])
+    formatPopup.target = self
+    formatPopup.action = #selector(formatChanged)
     passwordField.placeholderString = "可选密码"
     updateSelectionSummary()
     appendLog("已就绪。添加文件，或把压缩包拖进窗口开始处理。\n")
@@ -853,7 +1033,7 @@ private final class MainViewController: NSViewController {
     selectedURLs = urls
     setMode(.compress)
     destinationURL = nil
-    formatPopup.selectItem(withTitle: profile.format)
+    formatPopup.selectItem(withTitle: profile.popupTitle)
     updateSelectionSummary()
     appendLog("Finder 服务：压缩为 \(profile.serviceLabel)。\n")
     startCompress(profile: profile, quitWhenFinished: quitWhenFinished, revealWhenFinished: revealWhenFinished)
@@ -861,6 +1041,10 @@ private final class MainViewController: NSViewController {
 
   @objc private func modeChanged() {
     mode = modeControl.selectedSegment == 0 ? .extract : .compress
+    updateSelectionSummary()
+  }
+
+  @objc private func formatChanged() {
     updateSelectionSummary()
   }
 
@@ -954,14 +1138,21 @@ private final class MainViewController: NSViewController {
         return
       }
 
-      let args = extractionArguments(archive: archive, output: output)
       appendLog("正在解压 \(archive.lastPathComponent) -> \(output.path)\n")
-      run7zz(arguments: args, workingDirectory: archive.deletingLastPathComponent()) { [weak self] status in
+
+      let completion: (Int32) -> Void = { [weak self] status in
         self?.appendLog(status == 0 ? "完成：\(archive.lastPathComponent)\n" : "失败：\(archive.lastPathComponent)，退出码=\(status)\n")
         if status == 0 {
           outputURLs.append(output)
         }
         runNext()
+      }
+
+      if isTarGzipArchive(archive) {
+        runTarGzipExtract(archive: archive, outputDirectory: output, completion: completion)
+      } else {
+        let args = extractionArguments(archive: archive, output: output)
+        run7zz(arguments: args, workingDirectory: archive.deletingLastPathComponent(), completion: completion)
       }
     }
 
@@ -969,6 +1160,11 @@ private final class MainViewController: NSViewController {
   }
 
   private func startCompress(profile: CompressionProfile, quitWhenFinished: Bool, revealWhenFinished: Bool) {
+    if profile == .serverTarGzip {
+      startServerTarGzipCompress(quitWhenFinished: quitWhenFinished, revealWhenFinished: revealWhenFinished)
+      return
+    }
+
     let format = profile.format
     guard let output = archiveOutputURL(format: format) else {
       showAlert(message: "无法确定压缩包名称", information: "请选择位于可写目录中的文件或文件夹。")
@@ -1003,6 +1199,76 @@ private final class MainViewController: NSViewController {
     }
   }
 
+  private func startServerTarGzipCompress(quitWhenFinished: Bool, revealWhenFinished: Bool) {
+    guard let output = archiveOutputURL(format: CompressionProfile.serverTarGzip.format) else {
+      showAlert(message: "无法确定压缩包名称", information: "请选择位于可写目录中的文件或文件夹。")
+      return
+    }
+
+    let workingDirectory = commonDirectory(for: selectedURLs)
+    let paths = selectedURLs.map { relativePath(for: $0, from: workingDirectory) }
+    let tempDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("7zip-mac-\(UUID().uuidString)", isDirectory: true)
+    let tempTarName = output.deletingPathExtension().lastPathComponent
+    let tempTar = tempDirectory.appendingPathComponent(tempTarName)
+
+    do {
+      try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+      if FileManager.default.fileExists(atPath: output.path) {
+        try FileManager.default.removeItem(at: output)
+      }
+    } catch {
+      showAlert(message: "无法准备服务端 tar.gz", information: error.localizedDescription)
+      return
+    }
+
+    runButton.isEnabled = false
+    isRunning = true
+    appendLog("\n正在创建服务端 tar.gz：\(output.path)\n")
+    appendLog("步骤 1/2：生成 tar，保留相对目录结构并过滤 macOS 元数据。\n")
+
+    var tarArgs = ["a", tempTar.path, "-ttar", "-y"]
+    tarArgs.append(contentsOf: serverTarExclusionArguments())
+    tarArgs.append(contentsOf: paths)
+
+    run7zz(arguments: tarArgs, workingDirectory: workingDirectory) { [weak self] tarStatus in
+      guard let self else { return }
+      guard tarStatus == 0 else {
+        self.appendLog("生成 tar 失败，退出码=\(tarStatus)\n")
+        self.cleanupTemporaryDirectory(tempDirectory)
+        self.finishRun(revealURLs: [], quitWhenFinished: quitWhenFinished, revealWhenFinished: revealWhenFinished)
+        return
+      }
+
+      self.appendLog("步骤 2/2：压缩为 gzip。\n")
+      let gzipArgs = ["a", output.path, "-tgzip", "-y", tempTarName]
+      self.run7zz(arguments: gzipArgs, workingDirectory: tempDirectory) { [weak self] gzipStatus in
+        guard let self else { return }
+        self.cleanupTemporaryDirectory(tempDirectory)
+        self.appendLog(gzipStatus == 0 ? "服务端 tar.gz 已创建。\n" : "gzip 压缩失败，退出码=\(gzipStatus)\n")
+        self.finishRun(
+          revealURLs: gzipStatus == 0 ? [output] : [],
+          quitWhenFinished: quitWhenFinished,
+          revealWhenFinished: revealWhenFinished
+        )
+      }
+    }
+  }
+
+  private func serverTarExclusionArguments() -> [String] {
+    [
+      "-xr!.DS_Store",
+      "-xr!._*",
+      "-xr!__MACOSX",
+      "-xr!.Spotlight-V100",
+      "-xr!.Trashes"
+    ]
+  }
+
+  private func cleanupTemporaryDirectory(_ url: URL) {
+    try? FileManager.default.removeItem(at: url)
+  }
+
   private func run7zz(arguments: [String], workingDirectory: URL?, completion: @escaping (Int32) -> Void) {
     do {
       let runner = try ArchiveTaskRunner()
@@ -1025,6 +1291,27 @@ private final class MainViewController: NSViewController {
       runner.runCapturing(arguments: arguments, workingDirectory: workingDirectory, completion: completion)
     } catch {
       completion(1, "\(error.localizedDescription)\n")
+    }
+  }
+
+  private func runTarGzipListing(archive: URL, completion: @escaping (Int32, String) -> Void) {
+    do {
+      let runner = try ArchiveTaskRunner()
+      runner.runTarGzipListing(archive: archive, completion: completion)
+    } catch {
+      completion(1, "\(error.localizedDescription)\n")
+    }
+  }
+
+  private func runTarGzipExtract(archive: URL, outputDirectory: URL, completion: @escaping (Int32) -> Void) {
+    do {
+      let runner = try ArchiveTaskRunner()
+      runner.runTarGzipExtract(archive: archive, outputDirectory: outputDirectory, output: { [weak self] text in
+        self?.appendLog(text)
+      }, completion: completion)
+    } catch {
+      appendLog("\(error.localizedDescription)\n")
+      completion(1)
     }
   }
 
@@ -1053,12 +1340,8 @@ private final class MainViewController: NSViewController {
       let archive = queue.removeFirst()
       appendLog("\n压缩包：\(archive.lastPathComponent)\n")
       appendLog("路径：\(archive.path)\n\n")
-      var args = ["l", "-slt", archive.path]
-      let password = passwordField.stringValue
-      if !password.isEmpty {
-        args.append("-p\(password)")
-      }
-      run7zzCapturing(arguments: args, workingDirectory: archive.deletingLastPathComponent()) { [weak self] status, output in
+
+      let handleListing: (Int32, String) -> Void = { [weak self] status, output in
         guard let self else { return }
         if status == 0 {
           let entries = ArchiveListingParser.parse(output, archive: archive)
@@ -1069,6 +1352,18 @@ private final class MainViewController: NSViewController {
           self.appendLog(output)
         }
         runNext()
+      }
+
+      if isTarGzipArchive(archive) {
+        appendLog("检测到 tar.gz：正在读取内层 tar 目录。\n")
+        runTarGzipListing(archive: archive, completion: handleListing)
+      } else {
+        var args = ["l", "-slt", archive.path]
+        let password = passwordField.stringValue
+        if !password.isEmpty {
+          args.append("-p\(password)")
+        }
+        run7zzCapturing(arguments: args, workingDirectory: archive.deletingLastPathComponent(), completion: handleListing)
       }
     }
 
@@ -1099,7 +1394,7 @@ private final class MainViewController: NSViewController {
   private func extractionDestination(for archive: URL, multipleArchives: Bool, mode: ExtractionDestinationMode) -> URL {
     if let destinationURL {
       if multipleArchives {
-        return destinationURL.appendingPathComponent(archive.deletingPathExtension().lastPathComponent, isDirectory: true)
+        return destinationURL.appendingPathComponent(archiveStemName(for: archive), isDirectory: true)
       }
       return destinationURL
     }
@@ -1109,7 +1404,7 @@ private final class MainViewController: NSViewController {
     case .containingDirectory:
       return parent
     case .sameNameFolder:
-      return parent.appendingPathComponent(archive.deletingPathExtension().lastPathComponent, isDirectory: true)
+      return parent.appendingPathComponent(archiveStemName(for: archive), isDirectory: true)
     }
   }
 
@@ -1119,12 +1414,32 @@ private final class MainViewController: NSViewController {
 
     let baseName: String
     if selectedURLs.count == 1 {
-      baseName = selectedURLs[0].deletingPathExtension().lastPathComponent
+      baseName = archiveBaseName(for: selectedURLs[0])
     } else {
       baseName = "压缩包"
     }
 
     return baseDirectory.appendingPathComponent("\(baseName).\(format)")
+  }
+
+  private func archiveBaseName(for url: URL) -> String {
+    if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+      return url.lastPathComponent
+    }
+
+    return url.deletingPathExtension().lastPathComponent
+  }
+
+  private func archiveStemName(for url: URL) -> String {
+    let name = url.lastPathComponent
+    let lowercasedName = name.lowercased()
+    if lowercasedName.hasSuffix(".tar.gz") {
+      return String(name.dropLast(".tar.gz".count))
+    }
+    if lowercasedName.hasSuffix(".tgz") {
+      return String(name.dropLast(".tgz".count))
+    }
+    return url.deletingPathExtension().lastPathComponent
   }
 
   private func commonDirectory(for urls: [URL]) -> URL {
@@ -1180,8 +1495,14 @@ private final class MainViewController: NSViewController {
     }
 
     destinationLabel.stringValue = "输出位置：\(destinationText)"
+    let profile = CompressionProfile.from(format: formatPopup.titleOfSelectedItem ?? "7z")
     formatPopup.isEnabled = mode == .compress
-    encryptHeaderButton.isEnabled = mode == .compress
+    passwordField.isEnabled = mode == .extract || profile.supportsPassword
+    passwordField.placeholderString = mode == .compress && !profile.supportsPassword ? "tar.gz 不支持密码" : "可选密码"
+    encryptHeaderButton.isEnabled = mode == .compress && profile.supportsHeaderEncryption
+    if !profile.supportsHeaderEncryption {
+      encryptHeaderButton.state = .off
+    }
     runButton.title = mode == .extract ? "解压" : "压缩"
   }
 
@@ -1568,6 +1889,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
       return
     }
     controller.prepareCompression(urls: urls, profile: .zipDefault, quitWhenFinished: true, revealWhenFinished: false)
+  }
+
+  @objc func compressServerTarGzipSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+    beginBackgroundAction()
+    let urls = DropZoneView.fileURLs(from: pasteboard)
+    guard !urls.isEmpty else {
+      error.pointee = "Finder 没有传入文件。"
+      return
+    }
+    controller.prepareCompression(urls: urls, profile: .serverTarGzip, quitWhenFinished: true, revealWhenFinished: false)
   }
 
   @objc func extractHereSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
