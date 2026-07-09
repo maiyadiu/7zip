@@ -50,9 +50,10 @@ choice prompts.
 ## Current Safe Design
 
 - Only one visible app is installed: `7-Zip Mac.app`.
-- Double-click behavior is handled by the main app's file-open event.
+- Double-click behavior is handled by the main app's file-open event with a
+  compact progress window.
 - Archive preview is exposed through Finder Services as
-  `7-Zip：查看压缩包内容`.
+  `7-Zip：查看压缩包内容`, using a structured file table in the main window.
 - Compression choices are exposed through Finder Services:
   `7-Zip：压缩为 7z`, `7-Zip：极限压缩为 7z`, and `7-Zip：压缩为 zip`.
 - Install scripts copy the app only; they do not mutate LaunchServices defaults.

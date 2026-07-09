@@ -78,12 +78,13 @@ private final class ArchiveTaskRunner {
     engineURL = url
   }
 
+  @discardableResult
   func run(
     arguments: [String],
     workingDirectory: URL?,
     output: @escaping (String) -> Void,
     completion: @escaping (Int32) -> Void
-  ) {
+  ) -> Process? {
     let process = Process()
     let pipe = Pipe()
     let input = Pipe()
@@ -116,12 +117,14 @@ private final class ArchiveTaskRunner {
 
     do {
       try process.run()
+      return process
     } catch {
       pipe.fileHandleForReading.readabilityHandler = nil
       DispatchQueue.main.async {
         output("启动 7zz 失败：\(error.localizedDescription)\n")
         completion(1)
       }
+      return nil
     }
   }
 }
@@ -216,6 +219,295 @@ private final class DropZoneView: RoundedPanelView {
   }
 }
 
+private struct ArchiveEntry {
+  let archiveName: String
+  let path: String
+  let size: String
+  let modified: String
+  let kind: String
+}
+
+private final class ArchiveEntryStore: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+  var entries: [ArchiveEntry] = []
+
+  func numberOfRows(in tableView: NSTableView) -> Int {
+    entries.count
+  }
+
+  func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+    guard row < entries.count, let tableColumn else { return nil }
+    let id = tableColumn.identifier
+    let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? makeCell(identifier: id)
+    let entry = entries[row]
+
+    switch id.rawValue {
+    case "archive":
+      cell.textField?.stringValue = entry.archiveName
+    case "size":
+      cell.textField?.stringValue = entry.size
+    case "modified":
+      cell.textField?.stringValue = entry.modified
+    case "kind":
+      cell.textField?.stringValue = entry.kind
+    default:
+      cell.textField?.stringValue = entry.path
+    }
+
+    return cell
+  }
+
+  private func makeCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
+    let cell = NSTableCellView()
+    cell.identifier = identifier
+    let textField = NSTextField(labelWithString: "")
+    textField.lineBreakMode = .byTruncatingMiddle
+    textField.font = .systemFont(ofSize: 12)
+    textField.translatesAutoresizingMaskIntoConstraints = false
+    cell.addSubview(textField)
+    cell.textField = textField
+    NSLayoutConstraint.activate([
+      textField.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+      textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+      textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+    ])
+    return cell
+  }
+}
+
+private enum ArchiveListingParser {
+  static func parse(_ output: String, archive: URL) -> [ArchiveEntry] {
+    var records: [[String: String]] = []
+    var current: [String: String] = [:]
+
+    for rawLine in output.split(whereSeparator: \.isNewline).map(String.init) {
+      let line = rawLine.trimmingCharacters(in: .whitespaces)
+      guard !line.isEmpty else {
+        if !current.isEmpty {
+          records.append(current)
+          current = [:]
+        }
+        continue
+      }
+
+      guard let separator = line.firstIndex(of: "=") else { continue }
+      let key = line[..<separator].trimmingCharacters(in: .whitespaces)
+      let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+      current[key] = value
+    }
+
+    if !current.isEmpty {
+      records.append(current)
+    }
+
+    return records.compactMap { record in
+      guard let path = record["Path"], !path.isEmpty else { return nil }
+      if path == archive.path || path == archive.lastPathComponent {
+        return nil
+      }
+      if record["Type"] != nil, record["Size"] == nil {
+        return nil
+      }
+
+      let isDirectory = record["Folder"] == "+" || (record["Attributes"] ?? "").contains("D")
+      return ArchiveEntry(
+        archiveName: archive.lastPathComponent,
+        path: path,
+        size: isDirectory ? "" : formatByteString(record["Size"]),
+        modified: record["Modified"] ?? "",
+        kind: isDirectory ? "文件夹" : "文件"
+      )
+    }
+  }
+
+  private static func formatByteString(_ value: String?) -> String {
+    guard let value, let bytes = Int64(value) else { return value ?? "" }
+    let formatter = ByteCountFormatter()
+    formatter.allowedUnits = [.useBytes, .useKB, .useMB, .useGB]
+    formatter.countStyle = .file
+    return formatter.string(fromByteCount: bytes)
+  }
+}
+
+private final class ExtractionProgressWindowController: NSWindowController, NSWindowDelegate {
+  private let archives: [URL]
+  private var queue: [URL]
+  private var currentProcess: Process?
+  private var completedCount = 0
+  private var failedCount = 0
+  private var didFinish = false
+  private var didCancel = false
+
+  private let titleLabel = NSTextField(labelWithString: "正在解压")
+  private let detailLabel = NSTextField(labelWithString: "")
+  private let progress = NSProgressIndicator()
+  private let statusLabel = NSTextField(labelWithString: "")
+  private let actionButton = NSButton(title: "取消", target: nil, action: nil)
+
+  init(archives: [URL]) {
+    self.archives = archives
+    self.queue = archives
+
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 460, height: 178),
+      styleMask: [.titled, .closable],
+      backing: .buffered,
+      defer: false
+    )
+    window.title = "7-Zip Mac"
+    window.isReleasedWhenClosed = false
+    super.init(window: window)
+    window.delegate = self
+    buildUI()
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  func start() {
+    window?.center()
+    showWindow(nil)
+    runNext()
+  }
+
+  func windowWillClose(_ notification: Notification) {
+    if !didFinish {
+      currentProcess?.terminate()
+    }
+    NSApp.terminate(nil)
+  }
+
+  @objc private func actionButtonPressed() {
+    if didFinish {
+      close()
+      return
+    }
+
+    didCancel = true
+    currentProcess?.terminate()
+    queue.removeAll()
+    failedCount += 1
+    complete(message: "已取消。", shouldAutoClose: false)
+  }
+
+  private func buildUI() {
+    guard let contentView = window?.contentView else { return }
+
+    let icon = NSImageView()
+    icon.image = NSImage(named: "AppIcon") ?? NSImage(systemSymbolName: "archivebox.fill", accessibilityDescription: "7-Zip Mac")
+    icon.imageScaling = .scaleProportionallyUpOrDown
+    icon.translatesAutoresizingMaskIntoConstraints = false
+
+    titleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
+    detailLabel.font = .systemFont(ofSize: 13)
+    detailLabel.textColor = .secondaryLabelColor
+    detailLabel.lineBreakMode = .byTruncatingMiddle
+
+    progress.isIndeterminate = false
+    progress.minValue = 0
+    progress.maxValue = Double(max(archives.count, 1))
+    progress.doubleValue = 0
+    progress.controlSize = .regular
+
+    statusLabel.font = .systemFont(ofSize: 12)
+    statusLabel.textColor = .secondaryLabelColor
+    statusLabel.lineBreakMode = .byTruncatingTail
+
+    actionButton.target = self
+    actionButton.action = #selector(actionButtonPressed)
+    actionButton.bezelStyle = .rounded
+
+    let textStack = NSStackView(views: [titleLabel, detailLabel, progress, statusLabel])
+    textStack.orientation = .vertical
+    textStack.alignment = .leading
+    textStack.spacing = 8
+    textStack.translatesAutoresizingMaskIntoConstraints = false
+
+    let body = NSStackView(views: [icon, textStack])
+    body.orientation = .horizontal
+    body.alignment = .top
+    body.spacing = 14
+    body.translatesAutoresizingMaskIntoConstraints = false
+
+    contentView.addSubview(body)
+    contentView.addSubview(actionButton)
+    actionButton.translatesAutoresizingMaskIntoConstraints = false
+
+    NSLayoutConstraint.activate([
+      body.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+      body.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+      body.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 22),
+      icon.widthAnchor.constraint(equalToConstant: 44),
+      icon.heightAnchor.constraint(equalToConstant: 44),
+      textStack.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -58),
+      progress.widthAnchor.constraint(equalTo: textStack.widthAnchor),
+      actionButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+      actionButton.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
+      actionButton.widthAnchor.constraint(equalToConstant: 88)
+    ])
+  }
+
+  private func runNext() {
+    guard !queue.isEmpty else {
+      let message = failedCount == 0 ? "解压完成。" : "完成，\(failedCount) 个压缩包失败。"
+      complete(message: message, shouldAutoClose: failedCount == 0)
+      return
+    }
+
+    let archive = queue.removeFirst()
+    let output = archive.deletingLastPathComponent()
+    detailLabel.stringValue = archive.lastPathComponent
+    statusLabel.stringValue = "输出位置：\(output.path)"
+
+    let args = ["x", archive.path, "-o\(output.path)", "-y", "-aou"]
+    do {
+      let runner = try ArchiveTaskRunner()
+      currentProcess = runner.run(arguments: args, workingDirectory: output, output: { [weak self] text in
+        self?.consumeProgressOutput(text)
+      }, completion: { [weak self] status in
+        guard let self else { return }
+        guard !self.didCancel else { return }
+        self.currentProcess = nil
+        self.completedCount += 1
+        if status != 0 {
+          self.failedCount += 1
+        }
+        self.progress.doubleValue = Double(self.completedCount)
+        self.runNext()
+      })
+    } catch {
+      failedCount += 1
+      completedCount += 1
+      progress.doubleValue = Double(completedCount)
+      statusLabel.stringValue = error.localizedDescription
+      runNext()
+    }
+  }
+
+  private func consumeProgressOutput(_ text: String) {
+    let lines = text.split(whereSeparator: \.isNewline).map(String.init)
+    if let line = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+      statusLabel.stringValue = line
+    }
+  }
+
+  private func complete(message: String, shouldAutoClose: Bool) {
+    didFinish = true
+    currentProcess = nil
+    titleLabel.stringValue = failedCount == 0 ? "解压完成" : "解压未全部完成"
+    detailLabel.stringValue = message
+    statusLabel.stringValue = failedCount == 0 ? "文件已解压到压缩包所在文件夹。" : "请用主界面查看日志或输入密码后重试。"
+    progress.doubleValue = progress.maxValue
+    actionButton.title = "关闭"
+
+    if shouldAutoClose {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+        self?.close()
+      }
+    }
+  }
+}
+
 private final class MainViewController: NSViewController {
   private var selectedURLs: [URL] = []
   private var destinationURL: URL?
@@ -229,6 +521,9 @@ private final class MainViewController: NSViewController {
   private let destinationLabel = NSTextField(labelWithString: "输出位置：自动")
   private let passwordField = NSSecureTextField()
   private let encryptHeaderButton = NSButton(checkboxWithTitle: "加密 7z 文件名", target: nil, action: nil)
+  private let contentTable = NSTableView()
+  private let contentStatusLabel = NSTextField(labelWithString: "还没有读取压缩包内容。")
+  private let archiveEntryStore = ArchiveEntryStore()
   private let logView = NSTextView()
   private let runButton = NSButton(title: "开始", target: nil, action: nil)
 
@@ -296,6 +591,9 @@ private final class MainViewController: NSViewController {
     setMode(.extract)
     destinationURL = nil
     updateSelectionSummary()
+    archiveEntryStore.entries = []
+    contentTable.reloadData()
+    contentStatusLabel.stringValue = "正在读取压缩包内容..."
     replaceLog("正在读取压缩包内容...\n")
     listArchiveContents(archives)
   }
@@ -476,25 +774,55 @@ private final class MainViewController: NSViewController {
     }
   }
 
+  private func run7zzCapturing(
+    arguments: [String],
+    workingDirectory: URL?,
+    completion: @escaping (Int32, String) -> Void
+  ) {
+    do {
+      let runner = try ArchiveTaskRunner()
+      var captured = ""
+      runner.run(arguments: arguments, workingDirectory: workingDirectory, output: { text in
+        captured += text
+      }, completion: { status in
+        completion(status, captured)
+      })
+    } catch {
+      completion(1, "\(error.localizedDescription)\n")
+    }
+  }
+
   private func listArchiveContents(_ archives: [URL]) {
     var queue = archives
+    var allEntries: [ArchiveEntry] = []
 
     func runNext() {
       guard !queue.isEmpty else {
-        appendLog("内容读取完成。\n")
+        archiveEntryStore.entries = allEntries
+        contentTable.reloadData()
+        contentStatusLabel.stringValue = allEntries.isEmpty ? "没有读取到文件条目。" : "已读取 \(allEntries.count) 个条目。"
+        appendLog("内容读取完成，共 \(allEntries.count) 个条目。\n")
         return
       }
 
       let archive = queue.removeFirst()
       appendLog("\n压缩包：\(archive.lastPathComponent)\n")
       appendLog("路径：\(archive.path)\n\n")
-      var args = ["l", archive.path]
+      var args = ["l", "-slt", archive.path]
       let password = passwordField.stringValue
       if !password.isEmpty {
         args.append("-p\(password)")
       }
-      run7zz(arguments: args, workingDirectory: archive.deletingLastPathComponent()) { [weak self] status in
-        self?.appendLog(status == 0 ? "\n读取成功。\n" : "\n读取失败，退出码=\(status)\n")
+      run7zzCapturing(arguments: args, workingDirectory: archive.deletingLastPathComponent()) { [weak self] status, output in
+        guard let self else { return }
+        if status == 0 {
+          let entries = ArchiveListingParser.parse(output, archive: archive)
+          allEntries.append(contentsOf: entries)
+          self.appendLog("读取成功：\(archive.lastPathComponent)，\(entries.count) 个条目。\n")
+        } else {
+          self.appendLog("读取失败：\(archive.lastPathComponent)，退出码=\(status)\n")
+          self.appendLog(output)
+        }
         runNext()
       }
     }
@@ -695,6 +1023,31 @@ private final class MainViewController: NSViewController {
 
     let optionsPanel = panel(title: "选项", content: controlGrid)
 
+    configureArchiveContentTable()
+    let contentScroll = NSScrollView()
+    contentScroll.documentView = contentTable
+    contentScroll.hasVerticalScroller = true
+    contentScroll.hasHorizontalScroller = true
+    contentScroll.autohidesScrollers = true
+    contentScroll.borderType = .noBorder
+
+    contentStatusLabel.font = .systemFont(ofSize: 12)
+    contentStatusLabel.textColor = .secondaryLabelColor
+    let contentStack = NSStackView(views: [contentStatusLabel, contentScroll])
+    contentStack.orientation = .vertical
+    contentStack.alignment = .leading
+    contentStack.spacing = 6
+    contentStack.translatesAutoresizingMaskIntoConstraints = false
+    contentScroll.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+    let contentContainer = NSView()
+    contentContainer.addSubview(contentStack)
+    NSLayoutConstraint.activate([
+      contentStack.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 8),
+      contentStack.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -8),
+      contentStack.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 8),
+      contentStack.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor, constant: -8)
+    ])
+
     logView.isEditable = false
     logView.isSelectable = true
     logView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -705,9 +1058,27 @@ private final class MainViewController: NSViewController {
     logScroll.documentView = logView
     logScroll.hasVerticalScroller = true
     logScroll.borderType = .noBorder
-    logScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 230).isActive = true
+    logScroll.translatesAutoresizingMaskIntoConstraints = false
+    let logContainer = NSView()
+    logContainer.addSubview(logScroll)
+    NSLayoutConstraint.activate([
+      logScroll.leadingAnchor.constraint(equalTo: logContainer.leadingAnchor, constant: 8),
+      logScroll.trailingAnchor.constraint(equalTo: logContainer.trailingAnchor, constant: -8),
+      logScroll.topAnchor.constraint(equalTo: logContainer.topAnchor, constant: 8),
+      logScroll.bottomAnchor.constraint(equalTo: logContainer.bottomAnchor, constant: -8)
+    ])
 
-    let logPanel = panel(title: "任务日志", content: logScroll)
+    let detailTabs = NSTabView()
+    detailTabs.tabViewType = .topTabsBezelBorder
+    let contentTab = NSTabViewItem(identifier: "contents")
+    contentTab.label = "压缩包内容"
+    contentTab.view = contentContainer
+    let logTab = NSTabViewItem(identifier: "log")
+    logTab.label = "任务日志"
+    logTab.view = logContainer
+    detailTabs.addTabViewItem(contentTab)
+    detailTabs.addTabViewItem(logTab)
+    detailTabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 330).isActive = true
 
     runButton.bezelStyle = .rounded
     runButton.controlSize = .large
@@ -724,7 +1095,7 @@ private final class MainViewController: NSViewController {
     leftColumn.alignment = .leading
     leftColumn.spacing = 14
 
-    let rightColumn = NSStackView(views: [optionsPanel, logPanel, runBar])
+    let rightColumn = NSStackView(views: [optionsPanel, detailTabs, runBar])
     rightColumn.orientation = .vertical
     rightColumn.alignment = .leading
     rightColumn.spacing = 14
@@ -757,9 +1128,36 @@ private final class MainViewController: NSViewController {
       dropZone.widthAnchor.constraint(equalTo: leftColumn.widthAnchor),
       filePanel.widthAnchor.constraint(equalTo: leftColumn.widthAnchor),
       optionsPanel.widthAnchor.constraint(equalTo: rightColumn.widthAnchor),
-      logPanel.widthAnchor.constraint(equalTo: rightColumn.widthAnchor),
+      detailTabs.widthAnchor.constraint(equalTo: rightColumn.widthAnchor),
       runBar.widthAnchor.constraint(equalTo: rightColumn.widthAnchor)
     ])
+  }
+
+  private func configureArchiveContentTable() {
+    guard contentTable.tableColumns.isEmpty else { return }
+
+    let columns: [(String, String, CGFloat)] = [
+      ("path", "名称", 280),
+      ("size", "大小", 82),
+      ("modified", "修改时间", 138),
+      ("kind", "类型", 64),
+      ("archive", "压缩包", 140)
+    ]
+
+    for (identifier, title, width) in columns {
+      let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
+      column.title = title
+      column.width = width
+      column.minWidth = identifier == "path" ? 180 : 54
+      contentTable.addTableColumn(column)
+    }
+
+    contentTable.delegate = archiveEntryStore
+    contentTable.dataSource = archiveEntryStore
+    contentTable.usesAlternatingRowBackgroundColors = true
+    contentTable.headerView = NSTableHeaderView()
+    contentTable.rowHeight = 24
+    contentTable.allowsMultipleSelection = true
   }
 
   private func button(title: String, symbol: String, action: Selector) -> NSButton {
@@ -804,6 +1202,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
   )
 
   private let controller = MainViewController()
+  private var progressWindowController: ExtractionProgressWindowController?
   private var didReceiveBackgroundAction = false
   private var didConfigureWindow = false
   private var showWindowWorkItem: DispatchWorkItem?
@@ -815,8 +1214,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func application(_ application: NSApplication, open urls: [URL]) {
-    beginBackgroundAction()
-    controller.openArchivesAndExtract(urls: urls)
+    let archives = urls.filter { archiveExtensions.contains($0.pathExtension.lowercased()) }
+    guard !archives.isEmpty else {
+      showMainWindow()
+      controller.accept(urls: urls)
+      return
+    }
+
+    suppressInitialWindow()
+    showExtractionProgress(for: archives)
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -839,9 +1245,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
   }
 
-  private func beginBackgroundAction() {
+  private func suppressInitialWindow() {
     didReceiveBackgroundAction = true
     showWindowWorkItem?.cancel()
+  }
+
+  private func beginBackgroundAction() {
+    suppressInitialWindow()
     _ = controller.view
   }
 
@@ -861,6 +1271,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     configureWindowIfNeeded()
     NSApp.setActivationPolicy(.regular)
     window.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+  }
+
+  private func showExtractionProgress(for archives: [URL]) {
+    let progressWindowController = ExtractionProgressWindowController(archives: archives)
+    self.progressWindowController = progressWindowController
+    NSApp.setActivationPolicy(.regular)
+    progressWindowController.start()
     NSApp.activate(ignoringOtherApps: true)
   }
 

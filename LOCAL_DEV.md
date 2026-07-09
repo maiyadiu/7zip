@@ -45,11 +45,11 @@ drop, compression, extraction, archive-content preview, optional password input,
 and Finder Services entries for local use.
 
 The app can be set as the default archive opener through Finder's "Get Info"
-panel. When the app is launched by double-clicking an archive, it auto-extracts
-the archive to its containing folder without showing the main app window or
-opening a Finder result window. The main app remains the manual viewer and
-operation surface when launched normally or through the archive-preview Finder
-Service.
+panel. When the app is launched by double-clicking an archive, it shows a small
+progress window and extracts the archive to its containing folder without
+showing the main operation window or opening a Finder result window. The main
+app remains the manual viewer and operation surface when launched normally or
+through the archive-preview Finder Service.
 
 `scripts/set-macos-default-archive-app.sh` intentionally does not edit
 LaunchServices preferences. It only prints manual setup steps and removes the
@@ -68,9 +68,10 @@ is added later.
 
 The current macOS interaction contract is:
 
-1. Double-click an archive: silent in-place extraction through `7-Zip Mac.app`.
+1. Double-click an archive: compact progress-window extraction through
+   `7-Zip Mac.app`.
 2. Right-click an archive and choose `7-Zip：查看压缩包内容`: open the main app and
-   show `7zz l` output for the selected archive.
+   show a structured table of archive entries.
 3. Right-click files or folders and choose `7-Zip：极限压缩为 7z`: create a 7z
    archive with LZMA2, maximum compression level, 256 MB dictionary, maximum fast
    bytes, solid mode, and multithreading enabled.
