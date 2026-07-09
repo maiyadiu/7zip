@@ -127,6 +127,52 @@ private final class ArchiveTaskRunner {
       return nil
     }
   }
+
+  @discardableResult
+  func runCapturing(
+    arguments: [String],
+    workingDirectory: URL?,
+    completion: @escaping (Int32, String) -> Void
+  ) -> Process? {
+    let process = Process()
+    let pipe = Pipe()
+    let input = Pipe()
+    let captureQueue = DispatchQueue(label: "com.maiyadiu.sevenzipmac.capture")
+
+    process.executableURL = engineURL
+    process.arguments = arguments
+    process.currentDirectoryURL = workingDirectory
+    process.standardInput = input
+    process.standardOutput = pipe
+    process.standardError = pipe
+    input.fileHandleForWriting.closeFile()
+
+    do {
+      try process.run()
+      pipe.fileHandleForWriting.closeFile()
+      captureQueue.async {
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = Self.decode(data)
+        DispatchQueue.main.async {
+          completion(process.terminationStatus, text)
+        }
+      }
+      return process
+    } catch {
+      pipe.fileHandleForWriting.closeFile()
+      DispatchQueue.main.async {
+        completion(1, "启动 7zz 失败：\(error.localizedDescription)\n")
+      }
+      return nil
+    }
+  }
+
+  private static func decode(_ data: Data) -> String {
+    String(data: data, encoding: .utf8)
+      ?? String(data: data, encoding: .macOSRoman)
+      ?? ""
+  }
 }
 
 private class RoundedPanelView: NSView {
@@ -225,52 +271,145 @@ private struct ArchiveEntry {
   let size: String
   let modified: String
   let kind: String
+  let isDirectory: Bool
 }
 
-private final class ArchiveEntryStore: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-  var entries: [ArchiveEntry] = []
+private final class ArchiveNode: NSObject {
+  let archiveName: String
+  let name: String
+  let path: String
+  var size: String
+  var modified: String
+  var isDirectory: Bool
+  var children: [ArchiveNode]
 
-  func numberOfRows(in tableView: NSTableView) -> Int {
-    entries.count
+  var kind: String {
+    isDirectory ? "文件夹" : "文件"
   }
 
-  func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-    guard row < entries.count, let tableColumn else { return nil }
+  init(
+    archiveName: String,
+    name: String,
+    path: String,
+    size: String = "",
+    modified: String = "",
+    isDirectory: Bool,
+    children: [ArchiveNode] = []
+  ) {
+    self.archiveName = archiveName
+    self.name = name
+    self.path = path
+    self.size = size
+    self.modified = modified
+    self.isDirectory = isDirectory
+    self.children = children
+  }
+}
+
+private struct ArchiveTree {
+  let roots: [ArchiveNode]
+  let fileCount: Int
+  let folderCount: Int
+}
+
+private final class ArchiveEntryStore: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+  var roots: [ArchiveNode] = []
+  var fileCount = 0
+  var folderCount = 0
+
+  func clear() {
+    roots = []
+    fileCount = 0
+    folderCount = 0
+  }
+
+  func apply(tree: ArchiveTree) {
+    roots = tree.roots
+    fileCount = tree.fileCount
+    folderCount = tree.folderCount
+  }
+
+  func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+    guard let node = item as? ArchiveNode else { return roots.count }
+    return node.children.count
+  }
+
+  func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+    guard let node = item as? ArchiveNode else { return roots[index] }
+    return node.children[index]
+  }
+
+  func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+    guard let node = item as? ArchiveNode else { return false }
+    return !node.children.isEmpty
+  }
+
+  func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+    guard let tableColumn, let node = item as? ArchiveNode else { return nil }
     let id = tableColumn.identifier
-    let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? makeCell(identifier: id)
-    let entry = entries[row]
+    let isNameColumn = id.rawValue == "name"
+    let cell = outlineView.makeView(withIdentifier: id, owner: self) as? NSTableCellView
+      ?? makeCell(identifier: id, includesImage: isNameColumn)
 
     switch id.rawValue {
     case "archive":
-      cell.textField?.stringValue = entry.archiveName
+      cell.textField?.stringValue = node.archiveName
     case "size":
-      cell.textField?.stringValue = entry.size
+      cell.textField?.stringValue = node.isDirectory ? "" : node.size
     case "modified":
-      cell.textField?.stringValue = entry.modified
+      cell.textField?.stringValue = node.modified
     case "kind":
-      cell.textField?.stringValue = entry.kind
+      cell.textField?.stringValue = node.kind
     default:
-      cell.textField?.stringValue = entry.path
+      cell.textField?.stringValue = node.name
+      cell.imageView?.image = icon(for: node)
     }
 
     return cell
   }
 
-  private func makeCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
+  private func makeCell(identifier: NSUserInterfaceItemIdentifier, includesImage: Bool) -> NSTableCellView {
     let cell = NSTableCellView()
     cell.identifier = identifier
     let textField = NSTextField(labelWithString: "")
     textField.lineBreakMode = .byTruncatingMiddle
     textField.font = .systemFont(ofSize: 12)
     textField.translatesAutoresizingMaskIntoConstraints = false
-    cell.addSubview(textField)
     cell.textField = textField
-    NSLayoutConstraint.activate([
-      textField.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-      textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-      textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
-    ])
+
+    if includesImage {
+      let imageView = NSImageView()
+      imageView.imageScaling = .scaleProportionallyDown
+      imageView.translatesAutoresizingMaskIntoConstraints = false
+      cell.imageView = imageView
+      cell.addSubview(imageView)
+      cell.addSubview(textField)
+      NSLayoutConstraint.activate([
+        imageView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+        imageView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        imageView.widthAnchor.constraint(equalToConstant: 16),
+        imageView.heightAnchor.constraint(equalToConstant: 16),
+        textField.leadingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: 6),
+        textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+        textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+      ])
+    } else {
+      cell.addSubview(textField)
+      NSLayoutConstraint.activate([
+        textField.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+        textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+        textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+      ])
+    }
+
     return cell
+  }
+
+  private func icon(for node: ArchiveNode) -> NSImage? {
+    let symbolName = node.isDirectory ? "folder.fill" : "doc"
+    let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: node.kind)
+    image?.isTemplate = true
+    return image
   }
 }
 
@@ -301,7 +440,7 @@ private enum ArchiveListingParser {
 
     return records.compactMap { record in
       guard let path = record["Path"], !path.isEmpty else { return nil }
-      if path == archive.path || path == archive.lastPathComponent {
+      if path == "." || path == archive.path || path == archive.lastPathComponent {
         return nil
       }
       if record["Type"] != nil, record["Size"] == nil {
@@ -314,7 +453,8 @@ private enum ArchiveListingParser {
         path: path,
         size: isDirectory ? "" : formatByteString(record["Size"]),
         modified: record["Modified"] ?? "",
-        kind: isDirectory ? "文件夹" : "文件"
+        kind: isDirectory ? "文件夹" : "文件",
+        isDirectory: isDirectory
       )
     }
   }
@@ -325,6 +465,94 @@ private enum ArchiveListingParser {
     formatter.allowedUnits = [.useBytes, .useKB, .useMB, .useGB]
     formatter.countStyle = .file
     return formatter.string(fromByteCount: bytes)
+  }
+}
+
+private enum ArchiveTreeBuilder {
+  static func build(from entries: [ArchiveEntry]) -> ArchiveTree {
+    var rootMap: [String: ArchiveNode] = [:]
+    var nodeMap: [String: ArchiveNode] = [:]
+    var fileCount = 0
+
+    for entry in entries {
+      let components = normalizedComponents(from: entry.path)
+      guard !components.isEmpty else { continue }
+
+      var parent: ArchiveNode?
+      var currentPath = ""
+
+      for (index, component) in components.enumerated() {
+        currentPath = currentPath.isEmpty ? component : "\(currentPath)/\(component)"
+        let isLeaf = index == components.count - 1
+        let shouldBeDirectory = isLeaf ? entry.isDirectory : true
+        let key = "\(entry.archiveName)\u{0}\(currentPath)"
+        let node: ArchiveNode
+
+        if let existing = nodeMap[key] {
+          node = existing
+          if shouldBeDirectory {
+            node.isDirectory = true
+          }
+          if isLeaf {
+            node.size = entry.size
+            node.modified = entry.modified
+          }
+        } else {
+          node = ArchiveNode(
+            archiveName: entry.archiveName,
+            name: component,
+            path: currentPath,
+            size: isLeaf ? entry.size : "",
+            modified: isLeaf ? entry.modified : "",
+            isDirectory: shouldBeDirectory
+          )
+          nodeMap[key] = node
+
+          if let parent {
+            parent.children.append(node)
+          } else {
+            rootMap[key] = node
+          }
+        }
+
+        parent = node
+      }
+
+      if !entry.isDirectory {
+        fileCount += 1
+      }
+    }
+
+    let roots = sorted(Array(rootMap.values))
+    let folderCount = nodeMap.values.filter(\.isDirectory).count
+    return ArchiveTree(roots: roots, fileCount: fileCount, folderCount: folderCount)
+  }
+
+  private static func normalizedComponents(from path: String) -> [String] {
+    path
+      .replacingOccurrences(of: "\\", with: "/")
+      .split(separator: "/")
+      .map(String.init)
+      .filter { !$0.isEmpty && $0 != "." }
+  }
+
+  private static func sorted(_ nodes: [ArchiveNode]) -> [ArchiveNode] {
+    for node in nodes {
+      node.children = sorted(node.children)
+    }
+
+    return nodes.sorted { left, right in
+      if left.isDirectory != right.isDirectory {
+        return left.isDirectory && !right.isDirectory
+      }
+
+      let nameCompare = left.name.localizedStandardCompare(right.name)
+      if nameCompare != .orderedSame {
+        return nameCompare == .orderedAscending
+      }
+
+      return left.archiveName.localizedStandardCompare(right.archiveName) == .orderedAscending
+    }
   }
 }
 
@@ -521,7 +749,7 @@ private final class MainViewController: NSViewController {
   private let destinationLabel = NSTextField(labelWithString: "输出位置：自动")
   private let passwordField = NSSecureTextField()
   private let encryptHeaderButton = NSButton(checkboxWithTitle: "加密 7z 文件名", target: nil, action: nil)
-  private let contentTable = NSTableView()
+  private let contentTable = NSOutlineView()
   private let contentStatusLabel = NSTextField(labelWithString: "还没有读取压缩包内容。")
   private let archiveEntryStore = ArchiveEntryStore()
   private let logView = NSTextView()
@@ -591,7 +819,7 @@ private final class MainViewController: NSViewController {
     setMode(.extract)
     destinationURL = nil
     updateSelectionSummary()
-    archiveEntryStore.entries = []
+    archiveEntryStore.clear()
     contentTable.reloadData()
     contentStatusLabel.stringValue = "正在读取压缩包内容..."
     replaceLog("正在读取压缩包内容...\n")
@@ -781,12 +1009,7 @@ private final class MainViewController: NSViewController {
   ) {
     do {
       let runner = try ArchiveTaskRunner()
-      var captured = ""
-      runner.run(arguments: arguments, workingDirectory: workingDirectory, output: { text in
-        captured += text
-      }, completion: { status in
-        completion(status, captured)
-      })
+      runner.runCapturing(arguments: arguments, workingDirectory: workingDirectory, completion: completion)
     } catch {
       completion(1, "\(error.localizedDescription)\n")
     }
@@ -798,10 +1021,18 @@ private final class MainViewController: NSViewController {
 
     func runNext() {
       guard !queue.isEmpty else {
-        archiveEntryStore.entries = allEntries
+        let tree = ArchiveTreeBuilder.build(from: allEntries)
+        archiveEntryStore.apply(tree: tree)
         contentTable.reloadData()
-        contentStatusLabel.stringValue = allEntries.isEmpty ? "没有读取到文件条目。" : "已读取 \(allEntries.count) 个条目。"
-        appendLog("内容读取完成，共 \(allEntries.count) 个条目。\n")
+        for root in tree.roots where root.isDirectory {
+          contentTable.expandItem(root)
+        }
+        if tree.fileCount == 0 && tree.folderCount == 0 {
+          contentStatusLabel.stringValue = "没有读取到文件条目。"
+        } else {
+          contentStatusLabel.stringValue = "已读取 \(tree.fileCount) 个文件，\(tree.folderCount) 个文件夹。"
+        }
+        appendLog("内容读取完成，共 \(tree.fileCount) 个文件，\(tree.folderCount) 个文件夹。\n")
         return
       }
 
@@ -1137,7 +1368,7 @@ private final class MainViewController: NSViewController {
     guard contentTable.tableColumns.isEmpty else { return }
 
     let columns: [(String, String, CGFloat)] = [
-      ("path", "名称", 280),
+      ("name", "名称", 280),
       ("size", "大小", 82),
       ("modified", "修改时间", 138),
       ("kind", "类型", 64),
@@ -1148,12 +1379,13 @@ private final class MainViewController: NSViewController {
       let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
       column.title = title
       column.width = width
-      column.minWidth = identifier == "path" ? 180 : 54
+      column.minWidth = identifier == "name" ? 180 : 54
       contentTable.addTableColumn(column)
     }
 
     contentTable.delegate = archiveEntryStore
     contentTable.dataSource = archiveEntryStore
+    contentTable.outlineTableColumn = contentTable.tableColumns.first
     contentTable.usesAlternatingRowBackgroundColors = true
     contentTable.headerView = NSTableHeaderView()
     contentTable.rowHeight = 24
