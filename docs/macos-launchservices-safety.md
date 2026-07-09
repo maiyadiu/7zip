@@ -56,4 +56,7 @@ choice prompts.
   `7-Zip：查看压缩包内容`, using a structured file table in the main window.
 - Compression choices are exposed through Finder Services:
   `7-Zip：压缩为 7z`, `7-Zip：极限压缩为 7z`, and `7-Zip：压缩为 zip`.
+- Each Finder Service includes `NSRequiredContext` scoped to
+  `com.apple.finder`; without this key macOS may register the service but not
+  automatically present it in the Services menu.
 - Install scripts copy the app only; they do not mutate LaunchServices defaults.
