@@ -44,11 +44,20 @@ The GUI app is built at `macos/SevenZipMac/build/7-Zip Mac.app` and installed to
 drop, compression, extraction, archive-content preview, optional password input,
 and Finder Services entries for local use.
 
-The default-app script registers common archive formats to `7-Zip Mac.app`.
-When the app is launched by double-clicking an archive, it auto-extracts the
-archive to its containing folder without showing the main app window or opening
-a Finder result window. The main app remains the manual viewer and operation
-surface when launched normally or through the archive-preview Finder Service.
+The app can be set as the default archive opener through Finder's "Get Info"
+panel. When the app is launched by double-clicking an archive, it auto-extracts
+the archive to its containing folder without showing the main app window or
+opening a Finder result window. The main app remains the manual viewer and
+operation surface when launched normally or through the archive-preview Finder
+Service.
+
+`scripts/set-macos-default-archive-app.sh` intentionally does not edit
+LaunchServices preferences. It only prints manual setup steps and removes the
+old experimental helper copy if present. Do not automate default-app changes by
+batch editing `~/Library/Preferences/com.apple.LaunchServices*`, calling
+`LSSetDefaultRoleHandlerForContentType` in loops, repeatedly running
+`lsregister`, or killing `lsd`; those actions can trigger repeated macOS
+confirmation prompts and destabilize Finder/login state.
 
 Finder Services provide local right-click actions:
 `7-Zip：查看压缩包内容`, `7-Zip：解压到当前文件夹`,
