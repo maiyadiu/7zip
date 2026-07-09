@@ -54,8 +54,9 @@ choice prompts.
   compact progress window.
 - Archive preview is exposed through Finder Services as
   `7-Zip：查看压缩包内容`, using a hierarchical archive tree in the main window.
-  This preview is implemented entirely inside the app and does not require
-  alternate default handlers or LaunchServices changes.
+  Folder navigation, including double-click expansion, is implemented entirely
+  inside the app and does not require alternate default handlers or
+  LaunchServices changes.
 - Compression choices are exposed through Finder Services:
   `7-Zip：压缩为 7z`, `7-Zip：极限压缩为 7z`, and `7-Zip：压缩为 zip`.
 - Each Finder Service includes `NSRequiredContext` scoped to

@@ -71,8 +71,11 @@ The current macOS interaction contract is:
 1. Double-click an archive: compact progress-window extraction through
    `7-Zip Mac.app`.
 2. Right-click an archive and choose `7-Zip：查看压缩包内容`: open the main app and
-   show an expandable archive tree, so folders can be opened layer by layer
-   without extracting the archive first.
+   show an expandable archive tree across the full lower workspace. Folders can
+   be expanded with the disclosure control or by double-clicking, without
+   extracting the archive first. The selected-file area is intentionally compact:
+   paths appear as a one-line summary so the archive preview remains the primary
+   working surface.
 3. Right-click files or folders and choose `7-Zip：极限压缩为 7z`: create a 7z
    archive with LZMA2, maximum compression level, 256 MB dictionary, maximum fast
    bytes, solid mode, and multithreading enabled.

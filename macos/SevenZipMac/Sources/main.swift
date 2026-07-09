@@ -256,7 +256,7 @@ private final class DropZoneView: RoundedPanelView {
 
     addSubview(stack)
     NSLayoutConstraint.activate([
-      heightAnchor.constraint(equalToConstant: 220),
+      heightAnchor.constraint(equalToConstant: 170),
       stack.centerXAnchor.constraint(equalTo: centerXAnchor),
       stack.centerYAnchor.constraint(equalTo: centerYAnchor),
       iconView.widthAnchor.constraint(equalToConstant: 48),
@@ -418,7 +418,7 @@ private enum ArchiveListingParser {
     var records: [[String: String]] = []
     var current: [String: String] = [:]
 
-    for rawLine in output.split(whereSeparator: \.isNewline).map(String.init) {
+    for rawLine in output.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init) {
       let line = rawLine.trimmingCharacters(in: .whitespaces)
       guard !line.isEmpty else {
         if !current.isEmpty {
@@ -744,7 +744,7 @@ private final class MainViewController: NSViewController {
 
   private let modeControl = NSSegmentedControl(labels: ["解压", "压缩"], trackingMode: .selectOne, target: nil, action: nil)
   private let dropZone = DropZoneView()
-  private let fileList = NSTextView()
+  private let selectionSummaryLabel = NSTextField(labelWithString: "还没有选择文件。")
   private let formatPopup = NSPopUpButton()
   private let destinationLabel = NSTextField(labelWithString: "输出位置：自动")
   private let passwordField = NSSecureTextField()
@@ -821,7 +821,9 @@ private final class MainViewController: NSViewController {
     updateSelectionSummary()
     archiveEntryStore.clear()
     contentTable.reloadData()
-    contentStatusLabel.stringValue = "正在读取压缩包内容..."
+    contentStatusLabel.stringValue = archives.count == 1
+      ? "正在读取：\(archives[0].lastPathComponent)"
+      : "正在读取 \(archives.count) 个压缩包..."
     replaceLog("正在读取压缩包内容...\n")
     listArchiveContents(archives)
   }
@@ -909,6 +911,17 @@ private final class MainViewController: NSViewController {
     case .compress:
       let profile = CompressionProfile.from(format: formatPopup.titleOfSelectedItem ?? "7z")
       startCompress(profile: profile, quitWhenFinished: false, revealWhenFinished: false)
+    }
+  }
+
+  @objc private func archiveContentDoubleClicked(_ sender: NSOutlineView) {
+    let row = sender.clickedRow >= 0 ? sender.clickedRow : sender.selectedRow
+    guard row >= 0, let node = sender.item(atRow: row) as? ArchiveNode, node.isDirectory else { return }
+
+    if sender.isItemExpanded(node) {
+      sender.collapseItem(node)
+    } else {
+      sender.expandItem(node)
     }
   }
 
@@ -1027,10 +1040,11 @@ private final class MainViewController: NSViewController {
         for root in tree.roots where root.isDirectory {
           contentTable.expandItem(root)
         }
+        let sourceText = archives.count == 1 ? "当前压缩包：\(archives[0].lastPathComponent) · " : "\(archives.count) 个压缩包 · "
         if tree.fileCount == 0 && tree.folderCount == 0 {
-          contentStatusLabel.stringValue = "没有读取到文件条目。"
+          contentStatusLabel.stringValue = "\(sourceText)没有读取到文件条目。"
         } else {
-          contentStatusLabel.stringValue = "已读取 \(tree.fileCount) 个文件，\(tree.folderCount) 个文件夹。"
+          contentStatusLabel.stringValue = "\(sourceText)已读取 \(tree.fileCount) 个文件，\(tree.folderCount) 个文件夹。"
         }
         appendLog("内容读取完成，共 \(tree.fileCount) 个文件，\(tree.folderCount) 个文件夹。\n")
         return
@@ -1146,15 +1160,25 @@ private final class MainViewController: NSViewController {
   }
 
   private func updateSelectionSummary() {
-    let text: String
+    let summary: String
     if selectedURLs.isEmpty {
-      text = "还没有选择文件。"
+      summary = "还没有选择文件。"
+      selectionSummaryLabel.toolTip = nil
     } else {
-      text = selectedURLs.map { "• \($0.path)" }.joined(separator: "\n")
+      let names = selectedURLs.prefix(3).map(\.lastPathComponent).joined(separator: "、")
+      let suffix = selectedURLs.count > 3 ? " 等 \(selectedURLs.count) 项" : ""
+      summary = selectedURLs.count == 1 ? "已选择：\(selectedURLs[0].path)" : "已选择：\(names)\(suffix)"
+      selectionSummaryLabel.toolTip = selectedURLs.map(\.path).joined(separator: "\n")
     }
 
-    fileList.string = text
-    let destinationText = destinationURL?.path ?? "自动"
+    selectionSummaryLabel.stringValue = summary
+    let destinationText: String
+    if let destinationURL {
+      destinationText = destinationURL.path
+    } else {
+      destinationText = "自动"
+    }
+
     destinationLabel.stringValue = "输出位置：\(destinationText)"
     formatPopup.isEnabled = mode == .compress
     encryptHeaderButton.isEnabled = mode == .compress
@@ -1223,19 +1247,22 @@ private final class MainViewController: NSViewController {
     topBar.alignment = .centerY
     topBar.spacing = 18
 
-    fileList.isEditable = false
-    fileList.isSelectable = true
-    fileList.drawsBackground = false
-    fileList.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-    fileList.textColor = .secondaryLabelColor
+    selectionSummaryLabel.font = .systemFont(ofSize: 12)
+    selectionSummaryLabel.textColor = .secondaryLabelColor
+    selectionSummaryLabel.lineBreakMode = .byTruncatingMiddle
+    selectionSummaryLabel.maximumNumberOfLines = 1
+    selectionSummaryLabel.translatesAutoresizingMaskIntoConstraints = false
 
-    let fileScroll = NSScrollView()
-    fileScroll.documentView = fileList
-    fileScroll.hasVerticalScroller = true
-    fileScroll.borderType = .noBorder
-    fileScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 230).isActive = true
-
-    let filePanel = panel(title: "已选择", content: fileScroll)
+    let selectionBar = RoundedPanelView()
+    selectionBar.fillColor = .controlBackgroundColor
+    selectionBar.translatesAutoresizingMaskIntoConstraints = false
+    selectionBar.addSubview(selectionSummaryLabel)
+    NSLayoutConstraint.activate([
+      selectionBar.heightAnchor.constraint(equalToConstant: 38),
+      selectionSummaryLabel.leadingAnchor.constraint(equalTo: selectionBar.leadingAnchor, constant: 14),
+      selectionSummaryLabel.trailingAnchor.constraint(equalTo: selectionBar.trailingAnchor, constant: -14),
+      selectionSummaryLabel.centerYAnchor.constraint(equalTo: selectionBar.centerYAnchor)
+    ])
 
     let formatLabel = NSTextField(labelWithString: "格式")
     let passwordLabel = NSTextField(labelWithString: "密码")
@@ -1309,7 +1336,9 @@ private final class MainViewController: NSViewController {
     logTab.view = logContainer
     detailTabs.addTabViewItem(contentTab)
     detailTabs.addTabViewItem(logTab)
-    detailTabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 330).isActive = true
+    detailTabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 430).isActive = true
+    detailTabs.setContentHuggingPriority(.defaultLow, for: .vertical)
+    detailTabs.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 
     runButton.bezelStyle = .rounded
     runButton.controlSize = .large
@@ -1321,26 +1350,22 @@ private final class MainViewController: NSViewController {
     runBar.alignment = .centerY
     runBar.spacing = 8
 
-    let leftColumn = NSStackView(views: [dropZone, filePanel])
-    leftColumn.orientation = .vertical
-    leftColumn.alignment = .leading
-    leftColumn.spacing = 14
+    let leftTop = NSStackView(views: [dropZone, selectionBar])
+    leftTop.orientation = .vertical
+    leftTop.alignment = .leading
+    leftTop.spacing = 10
 
-    let rightColumn = NSStackView(views: [optionsPanel, detailTabs, runBar])
-    rightColumn.orientation = .vertical
-    rightColumn.alignment = .leading
-    rightColumn.spacing = 14
+    let topWorkspace = NSStackView(views: [leftTop, optionsPanel])
+    topWorkspace.orientation = .horizontal
+    topWorkspace.alignment = .top
+    topWorkspace.spacing = 16
+    topWorkspace.distribution = .fill
 
-    let mainSplit = NSStackView(views: [leftColumn, rightColumn])
-    mainSplit.orientation = .horizontal
-    mainSplit.alignment = .top
-    mainSplit.spacing = 16
-    mainSplit.distribution = .fill
-
-    let root = NSStackView(views: [topBar, mainSplit])
+    let root = NSStackView(views: [topBar, topWorkspace, detailTabs, runBar])
     root.orientation = .vertical
     root.alignment = .leading
-    root.spacing = 18
+    root.spacing = 14
+    root.distribution = .fill
     root.translatesAutoresizingMaskIntoConstraints = false
 
     view.addSubview(root)
@@ -1352,15 +1377,13 @@ private final class MainViewController: NSViewController {
       headerIcon.widthAnchor.constraint(equalToConstant: 44),
       headerIcon.heightAnchor.constraint(equalToConstant: 44),
       topBar.widthAnchor.constraint(equalTo: root.widthAnchor),
-      mainSplit.widthAnchor.constraint(equalTo: root.widthAnchor),
-      mainSplit.heightAnchor.constraint(equalTo: root.heightAnchor, constant: -66),
-      leftColumn.widthAnchor.constraint(equalTo: mainSplit.widthAnchor, multiplier: 0.58),
-      rightColumn.widthAnchor.constraint(greaterThanOrEqualToConstant: 360),
-      dropZone.widthAnchor.constraint(equalTo: leftColumn.widthAnchor),
-      filePanel.widthAnchor.constraint(equalTo: leftColumn.widthAnchor),
-      optionsPanel.widthAnchor.constraint(equalTo: rightColumn.widthAnchor),
-      detailTabs.widthAnchor.constraint(equalTo: rightColumn.widthAnchor),
-      runBar.widthAnchor.constraint(equalTo: rightColumn.widthAnchor)
+      topWorkspace.widthAnchor.constraint(equalTo: root.widthAnchor),
+      leftTop.widthAnchor.constraint(equalTo: topWorkspace.widthAnchor, multiplier: 0.58),
+      optionsPanel.widthAnchor.constraint(equalTo: topWorkspace.widthAnchor, multiplier: 0.42, constant: -16),
+      dropZone.widthAnchor.constraint(equalTo: leftTop.widthAnchor),
+      selectionBar.widthAnchor.constraint(equalTo: leftTop.widthAnchor),
+      detailTabs.widthAnchor.constraint(equalTo: root.widthAnchor),
+      runBar.widthAnchor.constraint(equalTo: root.widthAnchor)
     ])
   }
 
@@ -1368,11 +1391,11 @@ private final class MainViewController: NSViewController {
     guard contentTable.tableColumns.isEmpty else { return }
 
     let columns: [(String, String, CGFloat)] = [
-      ("name", "名称", 280),
-      ("size", "大小", 82),
-      ("modified", "修改时间", 138),
-      ("kind", "类型", 64),
-      ("archive", "压缩包", 140)
+      ("name", "名称", 520),
+      ("size", "大小", 110),
+      ("modified", "修改时间", 170),
+      ("kind", "类型", 82),
+      ("archive", "压缩包", 180)
     ]
 
     for (identifier, title, width) in columns {
@@ -1385,7 +1408,10 @@ private final class MainViewController: NSViewController {
 
     contentTable.delegate = archiveEntryStore
     contentTable.dataSource = archiveEntryStore
+    contentTable.target = self
+    contentTable.doubleAction = #selector(archiveContentDoubleClicked(_:))
     contentTable.outlineTableColumn = contentTable.tableColumns.first
+    contentTable.indentationPerLevel = 18
     contentTable.usesAlternatingRowBackgroundColors = true
     contentTable.headerView = NSTableHeaderView()
     contentTable.rowHeight = 24
